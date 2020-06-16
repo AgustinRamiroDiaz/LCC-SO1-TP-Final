@@ -1,19 +1,46 @@
 -module(servidor).
 -compile(export_all).
 
--record(clientConnection, {clientID}).
+-define(Puerto, 8000).
+
 -record(nodeLoad, {node, load}).
 -record(command, {cmd, args}).
 
 start() ->
-    spawn(?MODULE, dispatcher),
+    {ok, LSocket} = gen_tcp:listen(?Puerto, [binary, {packet, 0}, {active, false}]),
+    spawn(?MODULE, dispatcher, [LSocket]),
     spawn(?MODULE, pbalance, [maps:new()]),
     spawn(?MODULE, pstat).
 
-dispatcher() ->
+dispatcher(LSocket) ->
+    {ok , Socket} = gen_tcp:accept(LSocket),
+    spawn(?MODULE, psocket, [Socket]),
+    dispatcher(LSocket).
+
+psocket(Socket) ->
+    Node = pbalance ! getNode,
     receive
-        #clientConnection{clientID = ClientID} -> spawn(?MODULE, psocket, [ClientID])
-    end.
+        {tcp, Socket, #command{cmd = CMD, args = Args}} -> spawn(Node, ?MODULE, pcommand, [self(), CMD, Args])
+    end,
+    receive
+        {response, Response} -> Socket ! Response
+    end,
+    psocket(Socket).
+
+pcommand(Pid, CMD, Args) ->
+    case CMD of
+        "CON" -> io:format("ERROR No implementado");
+        "LSG" -> io:format("ERROR No implementado");
+        "NEW" -> io:format("ERROR No implementado");
+        "ACC" -> io:format("ERROR No implementado");
+        "PLA" -> io:format("ERROR No implementado");
+        "OBS" -> io:format("ERROR No implementado");
+        "LEA" -> io:format("ERROR No implementado");
+        "BYE" -> io:format("ERROR No implementado");
+        "UPD" -> io:format("ERROR No implementado")
+    end,
+    Pid ! {response, Response}.
+
 
 pbalance(Loads) ->
     receive
@@ -31,26 +58,6 @@ pstat() ->
     lists:foreach(fun(Node) -> Node ! NodeLoad end, Nodes),
     timer:sleep(500),
     pstat().
-
-psocket(ClientID) ->
-    Node = pbalance ! getNode,
-    receive
-        #command{cmd = CMD, args = Args} -> spawn(Node, ?MODULE, pcommand, [CMD, Args])
-    end,
-    psocket(ClientID).
-
-pcommand(CMD, Args) ->
-    case CMD of
-        "CON" -> io:format("ERROR No implementado");
-        "LSG" -> io:format("ERROR No implementado");
-        "NEW" -> io:format("ERROR No implementado");
-        "ACC" -> io:format("ERROR No implementado");
-        "PLA" -> io:format("ERROR No implementado");
-        "OBS" -> io:format("ERROR No implementado");
-        "LEA" -> io:format("ERROR No implementado");
-        "BYE" -> io:format("ERROR No implementado");
-        "UPD" -> io:format("ERROR No implementado")
-    end.
 
 getFreeNode([NodeLoad]) -> NodeLoad;
 getFreeNode([NodeLoad | NodeLoads]) ->
