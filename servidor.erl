@@ -5,12 +5,20 @@
 
 -record(nodeLoad, {node, load}).
 -record(command, {cmd, args}).
+-record(addUser, {pid, username}).
+
+-record(clientResponse, {status, args}).
+-record(listGames, {pid}).
+-record(game, {board, playerX, playerO, turn}).
+-record(newGame, {pid, name}).
 
 start() ->
     {ok, LSocket} = gen_tcp:listen(?Puerto, [binary, {packet, 0}, {active, false}]),
     spawn(?MODULE, dispatcher, [LSocket]),
     spawn(?MODULE, pbalance, [maps:new()]),
-    spawn(?MODULE, pstat).
+    spawn(?MODULE, pstat),
+    spawn(?MODULE, nameManager, [sets:new()]),
+    spawn(?MODULE, gamesManager, [0, maps:new()]).
 
 dispatcher(LSocket) ->
     {ok , Socket} = gen_tcp:accept(LSocket),
@@ -18,28 +26,41 @@ dispatcher(LSocket) ->
     dispatcher(LSocket).
 
 psocket(Socket) ->
-    Node = pbalance ! getNode,
     receive
-        {tcp, Socket, #command{cmd = CMD, args = Args}} -> spawn(Node, ?MODULE, pcommand, [self(), CMD, Args])
-    end,
-    receive
-        {response, Response} -> Socket ! Response
+        {tcp, Socket, #command{cmd = CMD, args = Args}} -> 
+            Node = pbalance ! getNode,
+            spawn(Node, ?MODULE, pcommand, [self(), CMD, Args]);
+        #clientResponse{status = Status, args = Args} -> Socket ! #clientResponse{status = Status, args = Args}
     end,
     psocket(Socket).
 
 pcommand(Pid, CMD, Args) ->
     case CMD of
-        "CON" -> io:format("ERROR No implementado");
-        "LSG" -> io:format("ERROR No implementado");
-        "NEW" -> io:format("ERROR No implementado");
+        "CON" -> 
+            nameManager ! #addUser{pid = self(), username = lists:nth(1, Args)},
+            receive
+                Status -> Pid ! #clientResponse{status = Status, args = []}
+            after 1000 ->
+                Pid ! timeException
+            end;
+        "LSG" -> 
+            gamesManager ! #listGames{pid = self()},
+            receive
+                GameIds -> Pid ! #clientResponse{status = "OK", args = [GameIds]}
+            after 1000 ->
+                Pid ! timeException
+            end;
+        "NEW" -> 
+            nameManager ! #newGame{pid = self(), name = "DOU"},
+            receive 
+                GameId -> Pid ! #clientResponse{status = "OK", args = [GameId]};
         "ACC" -> io:format("ERROR No implementado");
         "PLA" -> io:format("ERROR No implementado");
         "OBS" -> io:format("ERROR No implementado");
         "LEA" -> io:format("ERROR No implementado");
         "BYE" -> io:format("ERROR No implementado");
         "UPD" -> io:format("ERROR No implementado")
-    end,
-    Pid ! {response, Response}.
+    end.
 
 
 pbalance(Loads) ->
@@ -67,4 +88,24 @@ getFreeNode([NodeLoad | NodeLoads]) ->
         true -> NodeLoad
     end.
     
+nameManager(UsernamesSet) ->
+    receive
+        #addUser{pid = Pid, username = Username} -> 
+            if 
+                sets:is_element(Username, UsernamesSet) -> Pid ! error;
+                true -> Pid ! ok
+            end
+    end.
 
+gamesManager(N, GamesDict) ->
+    receive
+        #listGames{pid = Pid} -> 
+            Pid ! maps:keys(GamesDict),
+            gamesManager(N, GamesDict);
+        #newGame{pid = Pid, name = Name} -> 
+            Board = {{e, e, e}, {e, e, e}, {e, e, e}},
+            Game = #game{board = Board, playerX = Name, playerO = undefined, turn = x},
+            maps:put(N, Game, GamesDict),
+            Pid ! N, 
+            gamesManager(N+1, GamesDict);
+    end.
