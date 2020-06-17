@@ -6,10 +6,12 @@
 -record(nodeLoad, {node, load}).
 -record(command, {cmd, args}).
 -record(addUser, {pid, username}).
+-record(hasUser, {pid, username}).
 
 -record(clientResponse, {status, args}).
+-record(hasGame, {pid, gameID}).
 -record(listGames, {pid}).
--record(game, {board, playerX, playerO, turn}).
+-record(game, {board = {{e, e, e}, {e, e, e}, {e, e, e}}, playerX, playerO, turn = x, observers = []}).
 -record(newGame, {pid, name}).
 
 start() ->
@@ -17,7 +19,7 @@ start() ->
     spawn(?MODULE, dispatcher, [LSocket]),
     spawn(?MODULE, pbalance, [maps:new()]),
     spawn(?MODULE, pstat),
-    spawn(?MODULE, nameManager, [sets:new()]),
+    spawn(?MODULE, namesManager, [sets:new()]),
     spawn(?MODULE, gamesManager, [0, maps:new()]).
 
 dispatcher(LSocket) ->
@@ -37,23 +39,22 @@ psocket(Socket) ->
 pcommand(Pid, CMD, Args) ->
     case CMD of
         "CON" -> 
-            nameManager ! #addUser{pid = self(), username = lists:nth(1, Args)},
+            namesManager ! #addUser{pid = self(), username = lists:nth(1, Args)},
             receive
                 Status -> Pid ! #clientResponse{status = Status, args = []}
             after 1000 ->
                 Pid ! timeException
             end;
         "LSG" -> 
-            gamesManager ! #listGames{pid = self()},
-            receive
-                GameIds -> Pid ! #clientResponse{status = "OK", args = [GameIds]}
+            Games = getAllGames(),
+            Pid ! #clientResponse{status = "OK", args = [Games]};
+        "NEW" -> 
+            namesManager ! #newGame{pid = self(), name = "DOU"},
+            receive 
+                GameId -> Pid ! #clientResponse{status = "OK", args = [GameId]}
             after 1000 ->
                 Pid ! timeException
             end;
-        "NEW" -> 
-            nameManager ! #newGame{pid = self(), name = "DOU"},
-            receive 
-                GameId -> Pid ! #clientResponse{status = "OK", args = [GameId]};
         "ACC" -> io:format("ERROR No implementado");
         "PLA" -> io:format("ERROR No implementado");
         "OBS" -> io:format("ERROR No implementado");
@@ -74,9 +75,8 @@ pbalance(Loads) ->
     end.
 
 pstat() ->
-    Nodes = [node() | nodes()],
     NodeLoad = #nodeLoad{node = node(), load = erlang:statistics(total_active_tasks)},
-    lists:foreach(fun(Node) -> Node ! NodeLoad end, Nodes),
+    lists:foreach(fun(Node) -> Node ! NodeLoad end, getAllNodes()),
     timer:sleep(500),
     pstat().
 
@@ -88,24 +88,76 @@ getFreeNode([NodeLoad | NodeLoads]) ->
         true -> NodeLoad
     end.
     
-nameManager(UsernamesSet) ->
+namesManager(UsernamesSet) ->
     receive
         #addUser{pid = Pid, username = Username} -> 
+            UserExists = userExists(Username),
             if 
-                sets:is_element(Username, UsernamesSet) -> Pid ! error;
+                UserExists -> Pid ! error;
                 true -> Pid ! ok
-            end
+            end;
+        #hasUser{pid = Pid, username = Username} ->
+            Pid ! sets:is_element(Username, UsernamesSet)
     end.
 
-gamesManager(N, GamesDict) ->
+gamesManager(GamesDict) ->
     receive
+        #hasGame{pid = Pid, gameID = GameID} ->
+            NewGamesDict = GamesDict,
+            maps:is_key(GameID, GamesDict);
         #listGames{pid = Pid} -> 
-            Pid ! maps:keys(GamesDict),
-            gamesManager(N, GamesDict);
+            NewGamesDict = GamesDict,
+            Pid ! maps:keys(GamesDict);
         #newGame{pid = Pid, name = Name} -> 
-            Board = {{e, e, e}, {e, e, e}, {e, e, e}},
-            Game = #game{board = Board, playerX = Name, playerO = undefined, turn = x},
-            maps:put(N, Game, GamesDict),
-            Pid ! N, 
-            gamesManager(N+1, GamesDict);
+            Game = #game{playerX = Name},
+            GameId = "XDID",
+            NewGamesDict = maps:put(GameId, Game, GamesDict),
+            Pid ! GameId;
+        #acceptGame{pid = Pid, name = Name, gameId = GameId} -> 
+            Game = maps:find(GameId, GamesDict),
+            case Game of
+                {ok, #game{board = Board, playerX = PlayerX, turn = Turn}} -> 
+                    NewGamesDict = maps:put(GameId, #game{board = Board, playerX = PlayerX, playerO = Name, turn = Turn}, GamesDict),
+                    Pid ! Value;
+                error -> error
+    end,
+    gamesManager(NewGamesDict).
+
+getAllGames() ->
+    Nodes = getAllNodes(),
+    lists:foreach(fun(Node) -> {Node, gamesManager} ! #listGames{pid = self()} end, Nodes),
+    GamesLists = lists:map(fun(_) ->
+        receive GameIds -> GameIds
+        after 1000 -> []
+        end
+    end),
+    lists:merge(GamesLists).
+
+userExists(Username) ->
+    Nodes = getAllNodes(),
+    Found = lists:search(fun(Node) -> 
+        {Node, namesManager} ! #hasUser{pid = self(), username = Username},
+        receive HasUser -> HasUser
+        after 1000 -> false
+        end
+    end, Nodes),
+    case Found of
+        false -> false;
+        _ -> true
     end.
+
+
+gameExists(GameID) ->
+    Nodes = getAllNodes(),
+    Found = lists:search(fun(Node) -> 
+        {Node, gamesManager} ! #hasGame{pid = self(), gameID = GameID},
+        receive HasGame -> HasGame
+        after 1000 -> false
+        end
+    end, Nodes),
+    case Found of
+        false -> false;
+        _ -> true
+    end.
+
+getAllNodes() -> [node() | nodes()].
