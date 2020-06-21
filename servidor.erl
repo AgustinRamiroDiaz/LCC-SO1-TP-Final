@@ -22,11 +22,13 @@ start() ->
     spawn(?MODULE, namesManager, [sets:new()]),
     spawn(?MODULE, gamesManager, [0, maps:new()]).
 
+% Despachador de clientes
 dispatcher(LSocket) ->
     {ok , Socket} = gen_tcp:accept(LSocket),
     spawn(?MODULE, psocket, [Socket]),
     dispatcher(LSocket).
 
+% Administrador del socket TCP
 psocket(Socket) ->
     receive
         {tcp, Socket, #command{cmd = CMD, args = Args}} -> 
@@ -36,6 +38,7 @@ psocket(Socket) ->
     end,
     psocket(Socket).
 
+% Administra los comandos y los manda al nodo con menos carga utilizando pstat()
 pcommand(Pid, CMD, Args) ->
     case CMD of
         "CON" -> 
@@ -55,7 +58,7 @@ pcommand(Pid, CMD, Args) ->
             after 1000 ->
                 Pid ! timeException
             end;
-        "ACC" -> io:format("ERROR No implementado");
+        "ACC" -> acceptGame(getAllNodes(), Args);
         "PLA" -> io:format("ERROR No implementado");
         "OBS" -> io:format("ERROR No implementado");
         "LEA" -> io:format("ERROR No implementado");
@@ -63,7 +66,8 @@ pcommand(Pid, CMD, Args) ->
         "UPD" -> io:format("ERROR No implementado")
     end.
 
-
+    
+    % Balancea los nodos
 pbalance(Loads) ->
     receive
         #nodeLoad{node = Node, load = Load} -> 
@@ -73,39 +77,44 @@ pbalance(Loads) ->
             getFreeNode(maps:to_list(Loads)),
             pbalance(Loads)
     end.
-
+    
+% Avisa a los otros nodos su carga
+%%%%%%%%% No nos falta recibir la data de los demás?
 pstat() ->
     NodeLoad = #nodeLoad{node = node(), load = erlang:statistics(total_active_tasks)},
     lists:foreach(fun(Node) -> Node ! NodeLoad end, getAllNodes()),
     timer:sleep(500),
     pstat().
 
+% Retorna el nodo con menos carga
 getFreeNode([NodeLoad]) -> NodeLoad;
 getFreeNode([NodeLoad | NodeLoads]) ->
     LowestNodeLoad = getFreeNode(NodeLoads),
     if 
         LowestNodeLoad#nodeLoad.load =< NodeLoad#nodeLoad.load -> LowestNodeLoad;
-        true -> NodeLoad
-    end.
-    
+    true -> NodeLoad
+end.
+
+% Administrador de nombres
 namesManager(UsernamesSet) ->
     receive
         #addUser{pid = Pid, username = Username} -> 
             UserExists = userExists(Username),
             if 
                 UserExists -> Pid ! error;
-                true -> Pid ! ok
-            end;
-        #hasUser{pid = Pid, username = Username} ->
-            Pid ! sets:is_element(Username, UsernamesSet)
+            true -> Pid ! ok
+    end;
+    #hasUser{pid = Pid, username = Username} ->
+        Pid ! sets:is_element(Username, UsernamesSet)
     end.
-
+    
+% Administrador de güeguitos
 gamesManager(GamesDict) ->
     receive
         #hasGame{pid = Pid, gameID = GameID} ->
             NewGamesDict = GamesDict,
             maps:is_key(GameID, GamesDict);
-        #listGames{pid = Pid} -> 
+        #listGames{pid = Pid} ->
             NewGamesDict = GamesDict,
             Pid ! maps:keys(GamesDict);
         #newGame{pid = Pid, name = Name} -> 
@@ -118,11 +127,12 @@ gamesManager(GamesDict) ->
             case Game of
                 {ok, #game{board = Board, playerX = PlayerX, turn = Turn}} -> 
                     NewGamesDict = maps:put(GameId, #game{board = Board, playerX = PlayerX, playerO = Name, turn = Turn}, GamesDict),
-                    Pid ! Value;
-                error -> error
-    end,
+                    Pid ! ok;
+                error -> error;
+            end,
     gamesManager(NewGamesDict).
 
+% Retorna todos los juegos de todos los nodos
 getAllGames() ->
     Nodes = getAllNodes(),
     lists:foreach(fun(Node) -> {Node, gamesManager} ! #listGames{pid = self()} end, Nodes),
@@ -133,6 +143,7 @@ getAllGames() ->
     end),
     lists:merge(GamesLists).
 
+% Corrobora la existencia de un nombre de usuario
 userExists(Username) ->
     Nodes = getAllNodes(),
     Found = lists:search(fun(Node) -> 
@@ -145,19 +156,30 @@ userExists(Username) ->
         false -> false;
         _ -> true
     end.
+        
+% Va mandando mensajes a los nodos para aceptar y retorna el que le haya aceptado
+acceptGame([], _)->
+    error;
+acceptGame([Nodo|Nodos], AcceptCommand)->
+    {Nodo, gamesManager} ! AcceptCommand,
+    receive
+        ok -> ok;
+        error -> acceptGame(Nodos, AcceptCommand)
+    end.
 
-
+        
 gameExists(GameID) ->
     Nodes = getAllNodes(),
     Found = lists:search(fun(Node) -> 
         {Node, gamesManager} ! #hasGame{pid = self(), gameID = GameID},
         receive HasGame -> HasGame
-        after 1000 -> false
-        end
-    end, Nodes),
-    case Found of
-        false -> false;
-        _ -> true
-    end.
+    after 1000 -> false
+end
+end, Nodes),
+case Found of
+    false -> false;
+_ -> true
+end.
 
+% Retorna todos los nodos que conforman el servidor
 getAllNodes() -> [node() | nodes()].
