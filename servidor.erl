@@ -13,6 +13,7 @@
 -record(listGames, {pid}).
 -record(game, {board = {{e, e, e}, {e, e, e}, {e, e, e}}, playerX, playerO, turn = x, observers = []}).
 -record(newGame, {pid, name}).
+-record(move, {gameId, player, move}).
 
 start() ->
     {ok, LSocket} = gen_tcp:listen(?Puerto, [binary, {packet, 0}, {active, false}]),
@@ -58,8 +59,8 @@ pcommand(Pid, CMD, Args) ->
             after 1000 ->
                 Pid ! timeException
             end;
-        "ACC" -> acceptGame(getAllNodes(), Args);
-        "PLA" -> io:format("ERROR No implementado");
+        "ACC" -> acceptGame(getAllNodes(), GameId);
+        "PLA" -> playGame(getAllNodes(), GameId, Player, Move);
         "OBS" -> io:format("ERROR No implementado");
         "LEA" -> io:format("ERROR No implementado");
         "BYE" -> io:format("ERROR No implementado");
@@ -129,7 +130,18 @@ gamesManager(GamesDict) ->
                     NewGamesDict = maps:put(GameId, #game{board = Board, playerX = PlayerX, playerO = Name, turn = Turn}, GamesDict),
                     Pid ! ok;
                 error -> error;
+            end;
+        #move{gameId = GameId, player = Player, move = Move} ->
+            Game = maps:find(GameId, GamesDict),
+            case Game of
+                {ok, #game{board = Board, playerX = PlayerX, turn = Turn}} -> 
+                    case Move of
+                        % TODO lógica del juego, hay que revisar jugadas ilegales
+                    end,
+                error -> error
             end,
+
+
     gamesManager(NewGamesDict).
 
 % Retorna todos los juegos de todos los nodos
@@ -167,19 +179,27 @@ acceptGame([Nodo|Nodos], AcceptCommand)->
         error -> acceptGame(Nodos, AcceptCommand)
     end.
 
-        
+playGame([], _, _, _) -> error;
+playGame([Nodo, Nodos], GameId, Player, Move) ->
+    {Nodo, gamesManager} ! #move{gameId = GameId, player = Player, move = Move},
+    receive
+        ok -> ok;
+        error -> playGame(Nodos, GameId, Player, Move)
+    end.
+
+% Se fija si existe el juego en el servidor
 gameExists(GameID) ->
     Nodes = getAllNodes(),
     Found = lists:search(fun(Node) -> 
         {Node, gamesManager} ! #hasGame{pid = self(), gameID = GameID},
         receive HasGame -> HasGame
-    after 1000 -> false
-end
-end, Nodes),
-case Found of
-    false -> false;
-_ -> true
-end.
+        after 1000 -> false
+        end
+    end, Nodes),
+    case Found of
+        false -> false;
+        _ -> true
+    end.
 
 % Retorna todos los nodos que conforman el servidor
 getAllNodes() -> [node() | nodes()].
