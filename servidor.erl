@@ -14,6 +14,8 @@
 -record(game, {board = {{e, e, e}, {e, e, e}, {e, e, e}}, playerX, playerO, turn = x, observers = []}).
 -record(newGame, {pid, name}).
 -record(move, {gameId, player, move}).
+% supongo socket para identificador de usuarios
+-record(observe, {gameId, socket}).
 
 start() ->
     {ok, LSocket} = gen_tcp:listen(?Puerto, [binary, {packet, 0}, {active, false}]),
@@ -61,13 +63,13 @@ pcommand(Pid, CMD, Args) ->
             end;
         "ACC" -> acceptGame(getAllNodes(), GameId);
         "PLA" -> playGame(getAllNodes(), GameId, Player, Move);
-        "OBS" -> io:format("ERROR No implementado");
-        "LEA" -> io:format("ERROR No implementado");
+        "OBS" -> observeGame(getAllNodes(), GameId, Socket);
+        "LEA" -> leaveGame(getAllNodes(), GameId, Socket);
         "BYE" -> io:format("ERROR No implementado");
         "UPD" -> io:format("ERROR No implementado")
     end.
 
-    
+
     % Balancea los nodos
 pbalance(Loads) ->
     receive
@@ -137,10 +139,27 @@ gamesManager(GamesDict) ->
                 {ok, #game{board = Board, playerX = PlayerX, turn = Turn}} -> 
                     case Move of
                         % TODO lógica del juego, hay que revisar jugadas ilegales
+                        % TODO broadcastear los movimientos a todos los jugadores y observadores
                     end,
                 error -> error
             end,
-
+        #observe{gameId = GameId, socket = Socket} ->
+            Game = maps:find(GameId, GamesDict),
+            case Game of
+                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
+                    % TODO podríamos revisar si ya está observando para no repetir
+                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Socket | Observers]}
+                    NewGamesDict = maps:put(GameId, NewGame, GamesDict);
+                error -> error
+            end,
+        #leave{gameId = GameId, socket = Socket} ->
+            Game = maps:find(GameId, GamesDict),
+            case Game of
+                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
+                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Socket | Observers]}
+                    NewGamesDict = maps:put(GameId, NewGame, GamesDict);
+                error -> error
+            end,
 
     gamesManager(NewGamesDict).
 
@@ -179,6 +198,7 @@ acceptGame([Nodo|Nodos], AcceptCommand)->
         error -> acceptGame(Nodos, AcceptCommand)
     end.
 
+% Manda la jugada a todos los nodos hasta que encuentre dónde está la partida
 playGame([], _, _, _) -> error;
 playGame([Nodo, Nodos], GameId, Player, Move) ->
     {Nodo, gamesManager} ! #move{gameId = GameId, player = Player, move = Move},
@@ -186,6 +206,24 @@ playGame([Nodo, Nodos], GameId, Player, Move) ->
         ok -> ok;
         error -> playGame(Nodos, GameId, Player, Move)
     end.
+
+% TODO revisar utilizar otro átomo para diferenciar errores del tipo "el juego no está en este servidor" de los demás
+
+% Busca la partida en todos los nodos para observarla
+observeGame([], _, _) -> error;
+observeGame([Nodo | Nodos], GameId, Socket) ->
+    {Nodo, gamesManager} ! #observe{gameId = GameId, socket = Socket},
+    receive 
+        ok -> ok;
+        error -> observeGame(Nodos, GameId, Socket)
+    end.
+
+% Sale del juego bla bla todos los nodos bla bla
+leaveGame([], _, _) -> error;
+leaveGame([Node | Nodes], GameId, Socket) -> 
+    {Nodo, gamesManager} ! #leave{gameId = GameId, socket = Socket},
+    receive 
+        .
 
 % Se fija si existe el juego en el servidor
 gameExists(GameID) ->
