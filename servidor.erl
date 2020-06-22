@@ -100,7 +100,7 @@ pcommand(Pid, Socket, CMD, Args) ->
             after 1000 ->
                 Pid ! timeException
             end;
-        "BYE" -> io:format("ERROR No implementado");
+        "BYE" -> ;
         "UPD" -> io:format("ERROR No implementado")
     end.
 
@@ -172,12 +172,16 @@ gamesManager(GamesDict) ->
         #move{gameCode = GameCode, player = Player, move = Move} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
-                {ok, #game{board = Board, playerX = PlayerX, turn = Turn}} -> 
-                    case Move of A -> a
+                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
+                    case Move of A ->
                         % TODO lógica del juego, hay que revisar jugadas ilegales
                         % TODO broadcastear los movimientos a todos los jugadores y observadores
-                    end;
-                error -> error
+                        hacerCosas
+                    end,
+                    Receptors = [PlayerX, PlayerO, Observers],
+                    lists:map(fun(Receptor) -> Receptor ! NewGame end, Receptors),
+                    Pid ! ok;
+                error -> Pid ! error
             end;
         #observe{gameCode = GameCode, socket = Socket} ->
             Game = maps:find(GameCode, GamesDict),
