@@ -34,19 +34,44 @@ dispatcher(LSocket) ->
     dispatcher(LSocket).
 
 % Administrador del socket TCP
+psocket(#player{socket = Socket, username = undefined}) ->
+    case gen_tcp:recv(Socket, 0) of
+        {ok, Packet} ->
+            receive
+                {ok, Node} ->
+                    case Packet of
+                        {con, Username} ->
+                            pbalance ! getNode,
+                            receive
+                                {ok, Node} -> 
+                                    spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket}, {con, Username}]),
+                                    receive
+                                        #clientResponse{status = ok} -> 
+                                            gen_tcp:send(Socket, #clientResponse{status = ok}),
+                                            psocket(#player{socket = Socket, username = Username});
+                                        #clientResponse{status = error} ->
+                                            gen_tcp:send(Socket, #clientResponse{status = error}),
+                                            psocket(#player{socket = Socket, username = undefined});
+                                    end
+                        _ ->
+                            gen_tcp:send(Socket, #clientResponse{status = error, args = []}),
+                            psocket(#player{socket = Socket, username = Username});
+
 psocket(#player{socket = Socket, username = Username}) ->
     case gen_tcp:recv(Socket, 0) of
         {ok, Packet} ->
             pbalance ! getNode,
             receive
                 {ok, Node} ->
+                    case Packet of
+                        {con, } ->
                     #command{cmd = Cmd, args = Args} = getCommand(Packet),
-                    if 
-                        (Username == undefined) and (Cmd /= "CON") ->
-                            gen_tcp:send(Socket, #clientResponse{status = "ERR", args = []}),
-                            psocket(Player);
-                        (Username == undefined) and (Cmd == "CON") ->
-                            spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket, username = Username}, Cmd, Args]),
+                    if
+                        (Username == undefined) and (Cmd /= con) ->
+                            gen_tcp:send(Socket, #clientResponse{status = error, args = []}),
+                            psocket(#player{socket = Socket, username = Username});
+                        (Username == undefined) and (Cmd == con) ->
+                            spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket, username = Username}, con]),
                             receive
                                 #clientResponse{status = Status, args = Args} -> 
                                     gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
@@ -57,7 +82,7 @@ psocket(#player{socket = Socket, username = Username}) ->
                             receive
                                 #clientResponse{status = Status, args = Args} -> 
                                     gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
-                                    psocket(Player)
+                                    psocket(#player{socket = Socket, username = Username})
                             end
                     end
             end;
@@ -160,8 +185,8 @@ namesManager(UsernamesDict) ->
             if
                 Found == true -> Pid ! error;
                 true -> 
-                    Pid ! ok,
                     NewUsernamesDict = maps:put(Socket, Username, UsernamesDict),
+                    Pid ! ok,
                     namesManager(NewUsernamesDict)
             end;
         #userBySocket{pid = Pid, socket = Socket} ->
