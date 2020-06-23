@@ -5,49 +5,77 @@
 
 -record(nodeLoad, {node, load}).
 -record(command, {cmd, args}).
--record(addUser, {pid, username}).
+-record(addUser, {pid, socket, username}).
 -record(hasUser, {pid, username}).
 
+-record(player, {socket, username}).
+-record(game, {board = {{e, e, e}, {e, e, e}, {e, e, e}}, playerX, playerO, turn = x, observers = []}).
+
+-record(userBySocket, {pid, socket}).
 -record(clientResponse, {status, args}).
 -record(hasGame, {pid, gameCode}).
 -record(listGames, {pid}).
--record(game, {board = {{e, e, e}, {e, e, e}, {e, e, e}}, playerX, playerO, turn = x, observers = []}).
--record(acceptGame, {pid, name , gameCode}).
--record(newGame, {pid, name}).
--record(move, {gameCode, player, move}).
+-record(acceptGame, {pid, player, gameCode}).
+-record(newGame, {pid, player}).
+-record(move, {pid, gameCode, player, move}).
 % supongo socket para identificador de usuarios
--record(observe, {gameCode, socket}).
--record(leave, {gameCode, socket}).
+-record(observe, {gameCode, player}).
+-record(leave, {gameCode, player}).
 
 start() ->
     {ok, LSocket} = gen_tcp:listen(?Puerto, [binary, {packet, 0}, {active, false}]),
     spawn(?MODULE, dispatcher, [LSocket]),
     spawn(?MODULE, pbalance, [maps:new()]),
     spawn(?MODULE, pstat),
-    spawn(?MODULE, namesManager, [sets:new()]),
-    spawn(?MODULE, gamesManager, [0, maps:new()]).
+    spawn(?MODULE, namesManager, [maps:new()]),
+    spawn(?MODULE, gamesManager, [maps:new(), 0]).
 
 % Despachador de clientes
 dispatcher(LSocket) ->
     {ok , Socket} = gen_tcp:accept(LSocket),
-    spawn(?MODULE, psocket, [Socket]),
+    spawn(?MODULE, psocket, [#player{socket = Socket, username = undefined}]),
     dispatcher(LSocket).
 
 % Administrador del socket TCP
-psocket(Socket) ->
-    receive
-        {tcp, _, #command{cmd = CMD, args = Args}} -> 
-            Node = pbalance ! getNode,
-            spawn(Node, ?MODULE, pcommand, [self(), Socket, CMD, Args]);
-        #clientResponse{status = Status, args = Args} -> Socket ! #clientResponse{status = Status, args = Args}
-    end,
-    psocket(Socket).
+psocket(#player{socket = Socket, username = Username}) ->
+    case gen_tcp:recv(Socket, 0) of
+        {ok, Packet} ->
+            pbalance ! getNode,
+            receive
+                {ok, Node} ->
+                    #command{cmd = Cmd, args = Args} = getCommand(Packet),
+                    if 
+                        (Username == undefined) and (Cmd /= "CON") ->
+                            gen_tcp:send(Socket, #clientResponse{status = "ERR", args = []}),
+                            psocket(Player);
+                        (Username == undefined) and (Cmd == "CON") ->
+                            spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket, username = Username}, Cmd, Args]),
+                            receive
+                                #clientResponse{status = Status, args = Args} -> 
+                                    gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
+                                    psocket(#player{socket = Socket, username = lists:nth(1, Args)})
+                            end;
+                        true ->
+                            spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket, username = Username}, Cmd, Args]),
+                            receive
+                                #clientResponse{status = Status, args = Args} -> 
+                                    gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
+                                    psocket(Player);
+                            end
+                    end
+            end;
+        {error, closed} ->
+            io:format("El cliente cerró la conexión~n")
+    end.
 
-% Administra los comandos y los manda al nodo con menos carga utilizando pstat()
-pcommand(Pid, Socket, CMD, Args) ->
+getCommand(Packet) ->
+    return #command{cmd = "COMANDOU", args = []}.
+
+% Administra los comandos
+pcommand(Pid, Player, CMD, Args) ->
     case CMD of
         "CON" -> 
-            namesManager ! #addUser{pid = self(), username = lists:nth(1, Args)},
+            namesManager ! #addUser{pid = self(), socket = Player#player.socket, username = lists:nth(1, Args)},
             receive
                 Status -> Pid ! #clientResponse{status = Status, args = []}
             after 1000 ->
@@ -57,7 +85,7 @@ pcommand(Pid, Socket, CMD, Args) ->
             Games = getAllGames(),
             Pid ! #clientResponse{status = "OK", args = [Games]};
         "NEW" -> 
-            namesManager ! #newGame{pid = self(), name = "DOU"},
+            gamesManager ! #newGame{pid = self(), player = Player},
             receive 
                 GameId -> Pid ! #clientResponse{status = "OK", args = [GameId]}
             after 1000 ->
@@ -65,7 +93,7 @@ pcommand(Pid, Socket, CMD, Args) ->
             end;
         "ACC" -> 
             {Node, GameCode} = lists:nth(1, Args),
-            {Node, gamesManager} ! #acceptGame{pid = self(), name = Socket, gameCode = GameCode},
+            {Node, gamesManager} ! #acceptGame{pid = self(), player = Player, gameCode = GameCode},
             receive
                 ok -> Pid ! #clientResponse{status = "OK", args = []};
                 error -> Pid ! #clientResponse{status = "ERROR", args = []}
@@ -75,7 +103,7 @@ pcommand(Pid, Socket, CMD, Args) ->
         "PLA" -> 
             {Node, GameCode} = lists:nth(1, Args),
             Move = lists:nth(2, Args),
-            {Node, gamesManager} ! #move{gameCode = GameCode, player = Socket, move = Move},
+            {Node, gamesManager} ! #move{pid = self(), gameCode = GameCode, player = Player, move = Move},
             receive 
                 ok -> Pid ! #clientResponse{status = "OK", args = []};
                 error -> Pid ! #clientResponse{status = "ERROR", args = []}
@@ -84,7 +112,7 @@ pcommand(Pid, Socket, CMD, Args) ->
             end;
         "OBS" -> 
             {Node, GameCode} = lists:nth(1, Args),
-            {Node, gamesManager} ! #observe{gameCode = GameCode, socket = Socket},
+            {Node, gamesManager} ! #observe{gameCode = GameCode, player = Player},
             receive 
                 ok -> Pid ! #clientResponse{status = "OK", args = []};
                 error -> Pid ! #clientResponse{status = "ERROR", args = []}
@@ -93,31 +121,29 @@ pcommand(Pid, Socket, CMD, Args) ->
             end;
         "LEA" -> 
             {Node, GameCode} = lists:nth(1, Args),
-            {Node, gamesManager} ! #leave{gameCode = GameCode, socket = Socket},
+            {Node, gamesManager} ! #leave{gameCode = GameCode, player = Player},
             receive 
                 ok -> Pid ! #clientResponse{status = "OK", args = []};
                 error -> Pid ! #clientResponse{status = "ERROR", args = []}
             after 1000 ->
                 Pid ! timeException
             end;
-        "BYE" -> ;
-        "UPD" -> io:format("ERROR No implementado")
+        "BYE" -> no
     end.
 
 
-    % Balancea los nodos
+% Balancea los nodos
 pbalance(Loads) ->
     receive
         #nodeLoad{node = Node, load = Load} -> 
             NewLoads = maps:put(Node, Load, Loads),
             pbalance(NewLoads);
-        getNode ->
-            getFreeNode(maps:to_list(Loads)),
+        {Pid, getNode} ->
+            Pid ! {ok, getFreeNode(maps:to_list(Loads))},
             pbalance(Loads)
     end.
     
 % Avisa a los otros nodos su carga
-%%%%%%%%% No nos falta recibir la data de los demás?
 pstat() ->
     NodeLoad = #nodeLoad{node = node(), load = erlang:statistics(total_active_tasks)},
     lists:foreach(fun(Node) -> Node ! NodeLoad end, getAllNodes()),
@@ -130,78 +156,113 @@ getFreeNode([NodeLoad | NodeLoads]) ->
     LowestNodeLoad = getFreeNode(NodeLoads),
     if 
         LowestNodeLoad#nodeLoad.load =< NodeLoad#nodeLoad.load -> LowestNodeLoad;
-    true -> NodeLoad
-end.
+        true -> NodeLoad
+    end.
 
 % Administrador de nombres
-namesManager(UsernamesSet) ->
+namesManager(UsernamesDict) ->
     receive
-        #addUser{pid = Pid, username = Username} -> 
-            UserExists = userExists(Username),
-            if 
-                UserExists -> Pid ! error;
-                true -> Pid ! ok
+        #addUser{pid = Pid, socket = Socket, username = Username} ->
+            Values = map:values(UsernamesDict),
+            Found = lists:member(Username, Values),
+            if
+                Found == true -> Pid ! error,
+                true -> 
+                    Pid ! ok,
+                    NewUsernamesDict = maps:put(Socket, Username, UsernamesDict),
+                    namesManager(NewUsernamesDict)
             end;
-        #hasUser{pid = Pid, username = Username} ->
-            Pid ! sets:is_element(Username, UsernamesSet)
+        #userBySocket{pid = Pid, socket = Socket} ->
+            case maps:find(Socket, UsernamesDict) of
+                {ok, Username} -> Pid ! Username;
+                error -> error
+            end
     end.
     
 % Administrador de güeguitos
-gamesManager(GamesDict) ->
+gamesManager(GamesDict, NextGameCode) ->
     receive
         #hasGame{pid = Pid, gameCode = GameCode} ->
-            NewGamesDict = GamesDict,
-            maps:is_key(GameCode, GamesDict);
+            Pid ! maps:is_key(GameCode, GamesDict),
+            gamesManager(GamesDict, NextGameCode);
         #listGames{pid = Pid} ->
-            NewGamesDict = GamesDict,
-            Pid ! maps:keys(GamesDict);
-        #newGame{pid = Pid, name = Name} -> 
-            Game = #game{playerX = Name},
-            GameCode = "XDID",
-            NewGamesDict = maps:put(GameCode, Game, GamesDict),
-            GameId = {node(), GameCode},
-            Pid ! GameId;
-        #acceptGame{pid = Pid, name = Name, gameCode = GameCode} -> 
+            Pid ! lists:map(
+                fun({GameId, #game{playerX = PlayerX, playerO = PlayerO}}) -> 
+                    {GameId, PlayerX#player.username, PlayerO#player.username} end, 
+                maps:to_list(GamesDict)),
+            gamesManager(GamesDict, NextGameCode);
+        #newGame{pid = Pid, player = Player} -> 
+            Game = #game{playerX = Player, turn = x},
+            NewGamesDict = maps:put(NextGameCode, Game, GamesDict),
+            GameId = {node(), NextGameCode},
+            Pid ! GameId,
+            gamesManager(NewGamesDict, NextGameCode + 1);
+        #acceptGame{pid = Pid, player = Player, gameCode = GameCode} -> 
             Game = maps:find(GameCode, GamesDict),
             case Game of
-                {ok, #game{board = Board, playerX = PlayerX, playerO = undefined, turn = Turn}} -> 
-                    NewGamesDict = maps:put(GaneCode, #game{board = Board, playerX = PlayerX, playerO = Name, turn = Turn}, GamesDict),
-                    Pid ! ok;
-                error -> Pid ! error
+                {ok, #game{board = Board, playerX = PlayerX, playerO = undefined}} -> 
+                    NewGamesDict = maps:put(GameCode, #game{board = Board, playerX = PlayerX, playerO = Player}, GamesDict),
+                    Pid ! ok,
+                    gamesManager(NewGamesDict, GameCode);
+                error -> 
+                    Pid ! error,
+                    gamesManager(GamesDict, GameCode)
             end;
-        #move{gameCode = GameCode, player = Player, move = Move} ->
+        #move{pid = Pid, gameCode = GameCode, player = Player, move = Move} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
-                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
-                    case Move of A ->
-                        % TODO lógica del juego, hay que revisar jugadas ilegales
-                        % TODO broadcastear los movimientos a todos los jugadores y observadores
-                        hacerCosas
-                    end,
-                    Receptors = [PlayerX, PlayerO, Observers],
-                    lists:map(fun(Receptor) -> Receptor ! NewGame end, Receptors),
-                    Pid ! ok;
-                error -> Pid ! error
-            end;
-        #observe{gameCode = GameCode, socket = Socket} ->
+                {ok, Game} -> 
+                    case Move of
+                        ff -> ;
+                        {X, Y} -> 
+                            case makePlay({X, Y}, Game, Player) of
+                                error -> Pid ! error;
+                                NewGame ->
+                                    Receptors = [Game#game.playerX, Game#game.playerO, Game#game.observers],
+                                    lists:foreach(fun(Receptor) -> Receptor ! #command{cmd = "UPD", args = [NewGame]} end, Receptors),
+                                    Pid ! ok,
+                                    NewGamesDict = maps:put(GameCode, NewGame, GamesDict)
+                            end
+                    end
+            end,
+            gamesManager(NewGamesDict, NextGameCode);
+        #observe{gameCode = GameCode, player = Player} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
                 {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
                     % TODO podríamos revisar si ya está observando para no repetir
-                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Socket | Observers]},
+                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Player | Observers]},
                     NewGamesDict = maps:put(GameCode, NewGame, GamesDict);
                 error -> error
-            end;
-        #leave{gameCode = GameCode, socket = Socket} ->
+            end,
+            gamesManager(NewGamesDict, NextGameCode);
+        #leave{gameCode = GameCode, player = Player} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
                 {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
-                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Socket | Observers]},
+                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Observers]},
                     NewGamesDict = maps:put(GameCode, NewGame, GamesDict);
                 error -> error
-            end
+            end,
+            gamesManager(NewGamesDict, NextGameCode)
+    end.
+
+makePlay({X, Y}, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}, Player) ->
+    if 
+        element(X, element(Y, Board)) == e ->
+            if
+                (Turn == x) and (Player == PlayerX) ->
+                    Result = #game{board = replaceBoardPosition(Board, {X, Y}, x), playerX = PlayerX, playerO = PlayerO, turn = o, observers = Observers};
+                (Turn == o)  and (Player == PlayerO) ->
+                    Result = #game{board = replaceBoardPosition(Board, {X, Y}, o), playerX = PlayerX, playerO = PlayerO, turn = x, observers = Observers};
+                true -> Result = error 
+            end;
+        true -> Result = error
     end,
-    gamesManager(NewGamesDict).
+    Result.
+
+replaceBoardPosition(Board, {X, Y}, Symbol) ->
+    setelement(X, setelement(Y, element(X, Board), Symbol), Board).
 
 % Retorna todos los juegos de todos los nodos
 getAllGames() ->
@@ -213,20 +274,6 @@ getAllGames() ->
         end
     end),
     lists:merge(GamesLists).
-
-% Corrobora la existencia de un nombre de usuario
-userExists(Username) ->
-    Nodes = getAllNodes(),
-    Found = lists:search(fun(Node) -> 
-        {Node, namesManager} ! #hasUser{pid = self(), username = Username},
-        receive HasUser -> HasUser
-        after 1000 -> false
-        end
-    end, Nodes),
-    case Found of
-        false -> false;
-        _ -> true
-    end.
 
 % Retorna todos los nodos que conforman el servidor
 getAllNodes() -> [node() | nodes()].
