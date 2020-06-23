@@ -46,16 +46,18 @@ psocket(#player{socket = Socket, username = undefined}) ->
                                 {ok, Node} -> 
                                     spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket}, {con, Username}]),
                                     receive
-                                        #clientResponse{status = ok} -> 
+                                        #clientResponse{status = ok} ->
                                             gen_tcp:send(Socket, #clientResponse{status = ok}),
                                             psocket(#player{socket = Socket, username = Username});
                                         #clientResponse{status = error} ->
                                             gen_tcp:send(Socket, #clientResponse{status = error}),
-                                            psocket(#player{socket = Socket, username = undefined});
-                                    end
+                                            psocket(#player{socket = Socket, username = undefined})
+                                    end;
+                                error -> psocket(#player{socket = Socket, username = undefined})
+                            end;
                         _ ->
-                            gen_tcp:send(Socket, #clientResponse{status = error, args = []}),
-                            psocket(#player{socket = Socket, username = Username});
+                            gen_tcp:send(Socket, #clientResponse{status = errorNoUsername}),
+                            psocket(#player{socket = Socket, username = undefined});
 
 psocket(#player{socket = Socket, username = Username}) ->
     case gen_tcp:recv(Socket, 0) of
@@ -63,28 +65,13 @@ psocket(#player{socket = Socket, username = Username}) ->
             pbalance ! getNode,
             receive
                 {ok, Node} ->
-                    case Packet of
-                        {con, } ->
-                    #command{cmd = Cmd, args = Args} = getCommand(Packet),
-                    if
-                        (Username == undefined) and (Cmd /= con) ->
-                            gen_tcp:send(Socket, #clientResponse{status = error, args = []}),
-                            psocket(#player{socket = Socket, username = Username});
-                        (Username == undefined) and (Cmd == con) ->
-                            spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket, username = Username}, con]),
-                            receive
-                                #clientResponse{status = Status, args = Args} -> 
-                                    gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
-                                    psocket(#player{socket = Socket, username = lists:nth(1, Args)})
-                            end;
-                        true ->
-                            spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket, username = Username}, Cmd, Args]),
-                            receive
-                                #clientResponse{status = Status, args = Args} -> 
-                                    gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
-                                    psocket(#player{socket = Socket, username = Username})
-                            end
-                    end
+                    spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket, username = Username}, Cmd, Args]),
+                    receive
+                        #clientResponse{status = Status, args = Args} ->
+                            gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
+                            psocket(#player{socket = Socket, username = Username})
+                    end;
+                error -> psocket(#player{socket = Socket, username = Username})
             end;
         {error, closed} ->
             io:format("El cliente cerró la conexión~n")
