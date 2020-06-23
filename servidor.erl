@@ -12,13 +12,11 @@
 -record(game, {board = {{e, e, e}, {e, e, e}, {e, e, e}}, playerX, playerO, turn = x, observers = []}).
 
 -record(userBySocket, {pid, socket}).
--record(clientResponse, {status, args}).
--record(hasGame, {pid, gameCode}).
+-record(clientResponse, {status, cmdid, args}).
 -record(listGames, {pid}).
 -record(acceptGame, {pid, player, gameCode}).
 -record(newGame, {pid, player}).
 -record(move, {pid, gameCode, player, move}).
-% supongo socket para identificador de usuarios
 -record(observe, {gameCode, player}).
 -record(leave, {gameCode, player}).
 
@@ -60,7 +58,7 @@ psocket(#player{socket = Socket, username = Username}) ->
                             receive
                                 #clientResponse{status = Status, args = Args} -> 
                                     gen_tcp:send(Socket, #clientResponse{status = Status, args = Args}),
-                                    psocket(Player);
+                                    psocket(Player)
                             end
                     end
             end;
@@ -72,63 +70,58 @@ getCommand(Packet) ->
     return #command{cmd = "COMANDOU", args = []}.
 
 % Administra los comandos
-pcommand(Pid, Player, CMD, Args) ->
-    case CMD of
-        "CON" -> 
-            namesManager ! #addUser{pid = self(), socket = Player#player.socket, username = lists:nth(1, Args)},
+pcommand(Pid, Player, Cmd) ->
+    case Cmd of
+        {con, Username} -> 
+            namesManager ! #addUser{pid = self(), socket = Player#player.socket, username = Username},
             receive
                 Status -> Pid ! #clientResponse{status = Status, args = []}
             after 1000 ->
                 Pid ! timeException
             end;
-        "LSG" -> 
+        {lsg, Cmdid} -> 
             Games = getAllGames(),
-            Pid ! #clientResponse{status = "OK", args = [Games]};
-        "NEW" -> 
+            Pid ! #clientResponse{status = ok, cmdid = Cmdid, args = [Games]};
+        {new, Cmdid} -> 
             gamesManager ! #newGame{pid = self(), player = Player},
             receive 
-                GameId -> Pid ! #clientResponse{status = "OK", args = [GameId]}
+                GameId -> Pid ! #clientResponse{status = ok, cmdid = Cmdid, args = [GameId]}
             after 1000 ->
                 Pid ! timeException
             end;
-        "ACC" -> 
-            {Node, GameCode} = lists:nth(1, Args),
+        {acc, Cmdid, {Node, GameCode}} -> 
             {Node, gamesManager} ! #acceptGame{pid = self(), player = Player, gameCode = GameCode},
             receive
-                ok -> Pid ! #clientResponse{status = "OK", args = []};
-                error -> Pid ! #clientResponse{status = "ERROR", args = []}
+                ok -> Pid ! #clientResponse{status = ok, args = []};
+                error -> Pid ! #clientResponse{status = "ERROR", cmdid = Cmdid}
             after 1000 ->
                 Pid ! timeException
             end;
-        "PLA" -> 
-            {Node, GameCode} = lists:nth(1, Args),
-            Move = lists:nth(2, Args),
+        {pla, Cmdid, {Node, GameCode}, Move} -> 
             {Node, gamesManager} ! #move{pid = self(), gameCode = GameCode, player = Player, move = Move},
             receive 
-                ok -> Pid ! #clientResponse{status = "OK", args = []};
-                error -> Pid ! #clientResponse{status = "ERROR", args = []}
+                ok -> Pid ! #clientResponse{status = ok, args = []};
+                error -> Pid ! #clientResponse{status = "ERROR", cmdid = Cmdid}
             after 1000 ->
                 Pid ! timeException
             end;
-        "OBS" -> 
-            {Node, GameCode} = lists:nth(1, Args),
+        {obs, Cmdid, {Node, GameCode}} -> 
             {Node, gamesManager} ! #observe{gameCode = GameCode, player = Player},
             receive 
-                ok -> Pid ! #clientResponse{status = "OK", args = []};
-                error -> Pid ! #clientResponse{status = "ERROR", args = []}
+                ok -> Pid ! #clientResponse{status = ok, args = []};
+                error -> Pid ! #clientResponse{status = "ERROR", cmdid = Cmdid}
             after 1000 ->
                 Pid ! timeException
             end;
-        "LEA" -> 
-            {Node, GameCode} = lists:nth(1, Args),
+        {lea, Cmdid, {Node, GameCode}} -> 
             {Node, gamesManager} ! #leave{gameCode = GameCode, player = Player},
             receive 
-                ok -> Pid ! #clientResponse{status = "OK", args = []};
-                error -> Pid ! #clientResponse{status = "ERROR", args = []}
+                ok -> Pid ! #clientResponse{status = ok, args = []};
+                error -> Pid ! #clientResponse{status = "ERROR", cmdid = Cmdid}
             after 1000 ->
                 Pid ! timeException
             end;
-        "BYE" -> no
+        {bye} -> no
     end.
 
 
