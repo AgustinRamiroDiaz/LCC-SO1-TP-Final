@@ -6,7 +6,6 @@
 -record(nodeLoad, {node, load}).
 -record(command, {cmd, args}).
 -record(addUser, {pid, socket, username}).
--record(hasUser, {pid, username}).
 
 -record(player, {socket, username}).
 -record(game, {board = {{e, e, e}, {e, e, e}, {e, e, e}}, playerX, playerO, turn = x, observers = []}).
@@ -159,7 +158,7 @@ namesManager(UsernamesDict) ->
             Values = map:values(UsernamesDict),
             Found = lists:member(Username, Values),
             if
-                Found == true -> Pid ! error,
+                Found == true -> Pid ! error;
                 true -> 
                     Pid ! ok,
                     NewUsernamesDict = maps:put(Socket, Username, UsernamesDict),
@@ -175,9 +174,6 @@ namesManager(UsernamesDict) ->
 % Administrador de güeguitos
 gamesManager(GamesDict, NextGameCode) ->
     receive
-        #hasGame{pid = Pid, gameCode = GameCode} ->
-            Pid ! maps:is_key(GameCode, GamesDict),
-            gamesManager(GamesDict, NextGameCode);
         #listGames{pid = Pid} ->
             Pid ! lists:map(
                 fun({GameId, #game{playerX = PlayerX, playerO = PlayerO}}) -> 
@@ -197,47 +193,51 @@ gamesManager(GamesDict, NextGameCode) ->
                     NewGamesDict = maps:put(GameCode, #game{board = Board, playerX = PlayerX, playerO = Player}, GamesDict),
                     Pid ! ok,
                     gamesManager(NewGamesDict, GameCode);
-                error -> 
+                error ->
                     Pid ! error,
                     gamesManager(GamesDict, GameCode)
             end;
         #move{pid = Pid, gameCode = GameCode, player = Player, move = Move} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
-                {ok, Game} -> 
+                {ok, Game} ->
                     case Move of
-                        ff -> ;
-                        {X, Y} -> 
+                        ff -> todoTODO;
+                        {X, Y} ->
                             case makePlay({X, Y}, Game, Player) of
                                 error -> Pid ! error;
                                 NewGame ->
                                     Receptors = [Game#game.playerX, Game#game.playerO, Game#game.observers],
-                                    lists:foreach(fun(Receptor) -> Receptor ! #command{cmd = "UPD", args = [NewGame]} end, Receptors),
+                                    lists:foreach(fun(Receptor) -> Receptor ! #command{cmd = upd, args = [NewGame]} end, Receptors),
                                     Pid ! ok,
-                                    NewGamesDict = maps:put(GameCode, NewGame, GamesDict)
+                                    NewGamesDict = maps:put(GameCode, NewGame, GamesDict),
+                                    gamesManager(NewGamesDict, NextGameCode)
                             end
-                    end
-            end,
-            gamesManager(NewGamesDict, NextGameCode);
+                    end;
+                error ->
+                    error,
+                    gamesManager(GamesDict, NextGameCode)
+            end;
         #observe{gameCode = GameCode, player = Player} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
                 {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
                     % TODO podríamos revisar si ya está observando para no repetir
                     NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Player | Observers]},
-                    NewGamesDict = maps:put(GameCode, NewGame, GamesDict);
-                error -> error
-            end,
-            gamesManager(NewGamesDict, NextGameCode);
+                    gamesManager(maps:put(GameCode, NewGame, GamesDict), NextGameCode);
+                error -> 
+                    error,
+                    gamesManager(GamesDict, NextGameCode)
+            end;
         #leave{gameCode = GameCode, player = Player} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
                 {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
-                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Observers]},
-                    NewGamesDict = maps:put(GameCode, NewGame, GamesDict);
-                error -> error
-            end,
-            gamesManager(NewGamesDict, NextGameCode)
+                    NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = lists:delete(Player, Observers)},
+                    gamesManager(maps:put(GameCode, NewGame, GamesDict), NextGameCode);
+                error -> error,
+                gamesManager(GamesDict, NextGameCode)
+            end
     end.
 
 makePlay({X, Y}, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}, Player) ->
