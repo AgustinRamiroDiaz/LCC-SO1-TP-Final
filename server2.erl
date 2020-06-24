@@ -57,8 +57,8 @@ dispatcher(LSocket) ->
 psocket(User = #user{name = undefined}) ->
     Result = gen_tcp:recv(User#user.socket, 0),
     case Result of
-        {ok, {"CON", [_, NewName]}} ->
-            {Status, Args} = runCommand({"CON", NewName}, User),
+        {ok, {"CON", [Cmdid, NewName]}} ->
+            {Status, Args} = runCommand({"CON", [Cmdid, NewName]}, User),
             respond(User, Status, Args),
             case Status of
                 "OK" -> psocket(User#user{name = NewName});
@@ -77,10 +77,19 @@ psocket(User) ->
     Result = gen_tcp:recv(User#user.socket, 0),
     case Result of
         {ok, {"CON", [Cmdid, _]}} ->
-            respond(User, "ERR", [Cmdid, "Ya se encuentra registrado"]);
+            respond(User, "ERR", [Cmdid, "Ya se encuentra registrado"]),
+            psocket(User);
+        {ok, {"BYE", [Cmdid]}} ->
+            {Status, Args} = runCommand({"BYE", [Cmdid]}, User),
+            respond(User, Status, Args),
+            case Status of
+                "OK" -> fin;
+                "ERR" -> psocket(User)
+            end;
         {ok, Command} ->
             {Status, Args} = runCommand(User, Command),
-            respond(User, Status, Args);
+            respond(User, Status, Args),
+            psocket(User);
         {error, Reason} ->
             io:format("Se perdió la conexión con ~p (~p)~n", [User#user.name, Reason])
     end.
@@ -88,7 +97,7 @@ psocket(User) ->
 runCommand(User, Command = {_, [Cmdid | _]}) ->
     Result = getFreeNode(),
     case Result of
-        {node, Node} ->
+        {ok, Node} ->
             spawn(Node, ?MODULE, pcommand, [User, Command, self()]),
             receive
                 {Status, Args} -> {Status, Args}
@@ -109,9 +118,9 @@ pbalance(Loads) ->
         {load, Node, Load} ->
             NewLoads = maps:put(Node, Load, Loads),
             pbalance(NewLoads);
-        {getNode, Pid} ->
+        {node, Pid} ->
             Node = element(1, getFreeNode(maps:to_list(Loads))),
-            Pid ! {node, Node},
+            Pid ! {ok, Node},
             pbalance(Loads)
     end.
 
@@ -157,7 +166,7 @@ pcommand(User, Command, Pid) ->
                 error -> Pid ! {"ERR", [Cmdid, "No se pudo crear el juego"]}
             end;
         {"ACC", [Cmdid, {GameId, Node}]} ->
-            case acceptGame(User, GameId, Node) of
+            case acceptGame(User, {GameId, Node}) of
                 ok -> Pid ! {"OK", [Cmdid]};
                 error -> Pid ! {"ERR", [Cmdid, "No se pudo aceptar el juego"]}
             end;
@@ -166,21 +175,31 @@ pcommand(User, Command, Pid) ->
                 ok -> Pid ! {"OK", [Cmdid]};
                 error -> Pid ! {"ERR", [Cmdid, "No se pudo realizar la jugada"]}
             end;
+        {"OBS", [Cmdid, {GameId, Node}]} ->
+            case observeGame(User, {GameId, Node}) of
+                ok -> Pid ! {"OK", [Cmdid]};
+                error -> Pid ! {"ERR", [Cmdid, "No se pudo observar el juego"]}
+            end;
+        {"LEA", [Cmdid, {GameId, Node}]} ->
+            case leaveGame(User, {GameId, Node}) of
+                ok -> Pid ! {"OK", [Cmdid]};
+                error -> Pid ! {"ERR", [Cmdid, "No se pudo dejar de observar el juego"]}
+            end;
+        {"BYE", [Cmdid]} ->
+            case bye(User) of
+                ok -> Pid ! {"OK", [Cmdid]};
+                error -> Pid ! {"ERR", [Cmdid, "No se pudo desconectar al jugador"]}
+            end;
         {_, [Cmdid | _]} ->
             Pid ! {"ERR", [Cmdid, "Comando inválido"]}
     end.
 
-getFreeNode() ->
-    pbalance ! {getNode, self()},
-    receive {node, Node} -> {ok, Node}
-    after 1000 -> error
-    end.
+getFreeNode() -> sendAndWait(pbalance, {node, self()}).
 getFreeNode([NodeLoad]) -> NodeLoad;
 getFreeNode([NodeLoad | NodeLoads])  ->
     LowestLoadNode = getFreeNode(NodeLoads),
-    if
-        element(2, LowestLoadNode) =< element(2, NodeLoad) -> LowestLoadNode;
-        true -> NodeLoad
+    if element(2, LowestLoadNode) =< element(2, NodeLoad) -> LowestLoadNode;
+    true -> NodeLoad
     end.
 
 getAllNodes() -> [node() | nodes()].
@@ -208,7 +227,7 @@ addUser(Name) ->
 pgames(Games, NextGameId) ->
     receive
         {add, User, Pid} ->
-            Game = #game{board = ?EmptyBoard, playerX = User, playerO = undefined, turn = x, observers = []},
+            Game = #game{board = ?EmptyBoard, playerX = User, playerO = undefined, turn = x, observers = sets:new()},
             NewGames = maps:put(NextGameId, Game, Games),
             Pid ! {ok, NextGameId},
             pgames(NewGames, NextGameId + 1);
@@ -221,8 +240,9 @@ pgames(Games, NextGameId) ->
                 {ok, Game} ->
                     case Game#game.playerO of
                         undefined ->
-                            NewGame = Game#game{playerO = User},
+                            NewGame = Game#game{playerO = User, observers = sets:del_element(User, Game#game.observers)},
                             NewGames = maps:put(GameId, NewGame, Games),
+                            Pid ! ok,
                             pgames(NewGames, NextGameId);
                         _ ->
                             Pid ! error,
@@ -232,17 +252,74 @@ pgames(Games, NextGameId) ->
                     Pid ! error,
                     pgames(Games, NextGameId)
             end;
+        {play, User, forfeit, GameId, Pid} ->
+            case maps:find(GameId, Games) of
+                {ok, Game} ->
+                    if (Game#game.playerX == User) or (Game#game.playerO == User) ->
+                        NewGames = maps:remove(GameId, Games),
+                        updateWatchers(GameId, Game, {forfeit, User}),
+                        Pid ! ok,
+                        pgames(NewGames, NextGameId);
+                    true ->
+                        Pid ! error,
+                        pgames(Games, NextGameId)
+                    end;
+                error ->
+                    Pid ! error,
+                    pgames(Games, NextGameId)
+            end;
         {play, User, Play, GameId, Pid} ->
-            Game = maps:find(GameId, Games),
-            case makePlayOnBoard(Play, Game, User) of
-                {ok, NewGame} ->
-                    Pid ! ok,
+            case maps:find(GameId, Games) of
+                {ok, Game} ->
+                    case makePlayOnBoard(Play, Game, User) of
+                        {ok, NewGame} ->
+                            NewGames = maps:put(GameId, NewGame, Games),
+                            updateWatchers(GameId, NewGame, {board, NewGame#game.board}),
+                            Pid ! ok,
+                            pgames(NewGames, NextGameId);
+                        error ->
+                            error,
+                            pgames(Games, NextGameId)
+                    end;
+                error ->
+                    Pid ! error,
+                    pgames(Games, NextGameId)
+            end;
+        {observe, User, GameId, Pid} ->
+            case maps:find(GameId, Games) of
+                {ok, Game} ->
+                    IsPlaying = (User == Game#game.playerO) or (User == Game#game.playerX),
+                    if IsPlaying ->
+                        Pid ! error,
+                        pgames(Games, NextGameId);
+                    true ->
+                        NewGame = Game#game{observers = sets:add_element(User, Game#game.observers)},
+                        NewGames = maps:put(GameId, NewGame, Games),
+                        Pid ! ok,
+                        pgames(NewGames, NextGameId)
+                    end;
+                error ->
+                    Pid ! error,
+                    pgames(Games, NextGameId)
+            end;
+        {leave, User, GameId, Pid} ->
+            case maps:find(GameId, Games) of
+                {ok, Game} ->
+                    NewGame = Game#game{observers = sets:del_element(User, Game#game.observers)},
                     NewGames = maps:put(GameId, NewGame, Games),
+                    Pid ! ok,
                     pgames(NewGames, NextGameId);
                 error ->
-                    error,
+                    Pid ! error,
                     pgames(Games, NextGameId)
-            end
+            end;
+        {bye, User} ->
+            AbandonGame = fun(GameId) ->
+                pgames ! {leave, User, GameId, self()},
+                pgames ! {play, User, forfeit, GameId, self()}
+            end,
+            lists:foreach(AbandonGame, maps:values(Games));
+        _ -> ok
     end.
 
 getGameTitle(Game) ->
@@ -257,32 +334,34 @@ getGameTitle(Game) ->
 getAllGames() ->
     Nodes = getAllNodes(),
     Pid = self(),
-    lists:foreach(fun (Node) -> {Node, pbalance} ! {list, Pid} end, Nodes),
+    lists:foreach(fun (Node) -> {pbalance, Node} ! {list, Pid} end, Nodes),
     GetGames = fun (_) -> receive Games -> Games after 1000 -> [] end end,
     GamesLists = lists:map(GetGames, Nodes),
     lists:merge(GamesLists).
 
-addGame(User) ->
-    pgames ! {add, User, self()},
+sendAndWait(Receiver, Message) -> sendAndWait(Receiver, Message, 1000).
+sendAndWait(Receiver, Message, Timeout) ->
+    Receiver ! Message,
     receive Result -> Result
-    after 1000 -> error
+    after Timeout -> error
     end.
 
-acceptGame(User, GameId, Node) ->
-    {Node, pgames} ! {accept, User, GameId, self()},
-    receive Result -> Result
-    after 1000 -> error
-    end.
+addGame(User) -> sendAndWait(pgames, {add, User, self()}).
 
-makePlay(Play, User, {GameId, Node}) ->
-    {Node, pgames} ! {play, User, Play, GameId, self()},
-    receive
-        Result -> Result
-    after 1000 ->
-        error
-    end.
+acceptGame(User, {GameId, Node}) -> sendAndWait({pgames, Node}, {accept, User, GameId, self()}).
 
-makePlayOnBoard({X, Y}, Game = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}, Player) ->
+makePlay(Play, User, {GameId, Node}) -> sendAndWait({pgames, Node}, {play, User, Play, GameId, self()}).
+
+observeGame(User, {GameId, Node}) -> sendAndWait({pgames, Node}, {observe, User, GameId, self()}).
+
+leaveGame(User, {GameId, Node}) -> sendAndWait({pgames, Node}, {leave, User, GameId, self()}).
+
+bye(User) ->
+    Nodes = getAllNodes(),
+    lists:foreach(fun (Node) -> {pgames, Node} ! {bye, User} end, Nodes),
+    ok.
+
+makePlayOnBoard({X, Y}, Game = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn}, Player) ->
     if element(X, element(Y, Board)) == e ->
         if (Turn == x) and (Player == PlayerX) ->
             {ok, Game#game{board = replaceBoardPosition(Board, {X, Y}, x), turn = o}};
@@ -297,3 +376,7 @@ makePlayOnBoard({X, Y}, Game = #game{board = Board, playerX = PlayerX, playerO =
 
 replaceBoardPosition(Board, {X, Y}, Symbol) ->
     setelement(X, setelement(Y, element(X, Board), Symbol), Board).
+
+updateWatchers(GameId, #game{playerX = PlayerX, playerO = PlayerO, observers = Observers}, Message) ->
+    Receptors = [PlayerX, PlayerO, Observers],
+    lists:foreach(fun(Receptor) -> respond(Receptor, "UPD", [GameId, Message]) end, Receptors).
