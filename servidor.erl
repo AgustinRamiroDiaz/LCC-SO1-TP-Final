@@ -43,7 +43,7 @@ psocket(#player{socket = Socket, username = undefined}) ->
                         {con, Username} ->
                             pbalance ! getNode,
                             receive
-                                {ok, Node} -> 
+                                {ok, Node} ->
                                     spawn(Node, ?MODULE, pcommand, [self(), #player{socket = Socket}, {con, Username}]),
                                     receive
                                         #clientResponse{status = ok} ->
@@ -83,24 +83,24 @@ getCommand(Packet) ->
 % Administra los comandos
 pcommand(Pid, Player, Cmd) ->
     case Cmd of
-        {con, Username} -> 
+        {con, Username} ->
             namesManager ! #addUser{pid = self(), socket = Player#player.socket, username = Username},
             receive
                 Status -> Pid ! #clientResponse{status = Status, args = []}
             after 1000 ->
                 Pid ! timeException
             end;
-        {lsg, Cmdid} -> 
+        {lsg, Cmdid} ->
             Games = getAllGames(),
             Pid ! #clientResponse{status = ok, cmdid = Cmdid, args = [Games]};
-        {new, Cmdid} -> 
+        {new, Cmdid} ->
             gamesManager ! #newGame{pid = self(), player = Player},
-            receive 
+            receive
                 GameId -> Pid ! #clientResponse{status = ok, cmdid = Cmdid, args = [GameId]}
             after 1000 ->
                 Pid ! timeException
             end;
-        {acc, Cmdid, {Node, GameCode}} -> 
+        {acc, Cmdid, {Node, GameCode}} ->
             {Node, gamesManager} ! #acceptGame{pid = self(), player = Player, gameCode = GameCode},
             receive
                 ok -> Pid ! #clientResponse{status = ok, args = []};
@@ -108,25 +108,25 @@ pcommand(Pid, Player, Cmd) ->
             after 1000 ->
                 Pid ! timeException
             end;
-        {pla, Cmdid, {Node, GameCode}, Move} -> 
+        {pla, Cmdid, {Node, GameCode}, Move} ->
             {Node, gamesManager} ! #move{pid = self(), gameCode = GameCode, player = Player, move = Move},
-            receive 
+            receive
                 ok -> Pid ! #clientResponse{status = ok, args = []};
                 error -> Pid ! #clientResponse{status = "ERROR", cmdid = Cmdid}
             after 1000 ->
                 Pid ! timeException
             end;
-        {obs, Cmdid, {Node, GameCode}} -> 
+        {obs, Cmdid, {Node, GameCode}} ->
             {Node, gamesManager} ! #observe{gameCode = GameCode, player = Player},
-            receive 
+            receive
                 ok -> Pid ! #clientResponse{status = ok, args = []};
                 error -> Pid ! #clientResponse{status = "ERROR", cmdid = Cmdid}
             after 1000 ->
                 Pid ! timeException
             end;
-        {lea, Cmdid, {Node, GameCode}} -> 
+        {lea, Cmdid, {Node, GameCode}} ->
             {Node, gamesManager} ! #leave{gameCode = GameCode, player = Player},
-            receive 
+            receive
                 ok -> Pid ! #clientResponse{status = ok, args = []};
                 error -> Pid ! #clientResponse{status = "ERROR", cmdid = Cmdid}
             after 1000 ->
@@ -139,14 +139,14 @@ pcommand(Pid, Player, Cmd) ->
 % Balancea los nodos
 pbalance(Loads) ->
     receive
-        #nodeLoad{node = Node, load = Load} -> 
+        #nodeLoad{node = Node, load = Load} ->
             NewLoads = maps:put(Node, Load, Loads),
             pbalance(NewLoads);
         {Pid, getNode} ->
             Pid ! {ok, getFreeNode(maps:to_list(Loads))},
             pbalance(Loads)
     end.
-    
+
 % Avisa a los otros nodos su carga
 pstat() ->
     NodeLoad = #nodeLoad{node = node(), load = erlang:statistics(total_active_tasks)},
@@ -158,7 +158,7 @@ pstat() ->
 getFreeNode([NodeLoad]) -> NodeLoad;
 getFreeNode([NodeLoad | NodeLoads]) ->
     LowestNodeLoad = getFreeNode(NodeLoads),
-    if 
+    if
         LowestNodeLoad#nodeLoad.load =< NodeLoad#nodeLoad.load -> LowestNodeLoad;
         true -> NodeLoad
     end.
@@ -171,7 +171,7 @@ namesManager(UsernamesDict) ->
             Found = lists:member(Username, Values),
             if
                 Found == true -> Pid ! error;
-                true -> 
+                true ->
                     NewUsernamesDict = maps:put(Socket, Username, UsernamesDict),
                     Pid ! ok,
                     namesManager(NewUsernamesDict)
@@ -182,26 +182,26 @@ namesManager(UsernamesDict) ->
                 error -> error
             end
     end.
-    
+
 % Administrador de güeguitos
 gamesManager(GamesDict, NextGameCode) ->
     receive
         #listGames{pid = Pid} ->
             Pid ! lists:map(
-                fun({GameId, #game{playerX = PlayerX, playerO = PlayerO}}) -> 
-                    {GameId, PlayerX#player.username, PlayerO#player.username} end, 
+                fun({GameId, #game{playerX = PlayerX, playerO = PlayerO}}) ->
+                    {GameId, PlayerX#player.username, PlayerO#player.username} end,
                 maps:to_list(GamesDict)),
             gamesManager(GamesDict, NextGameCode);
-        #newGame{pid = Pid, player = Player} -> 
+        #newGame{pid = Pid, player = Player} ->
             Game = #game{playerX = Player, turn = x},
             NewGamesDict = maps:put(NextGameCode, Game, GamesDict),
             GameId = {node(), NextGameCode},
             Pid ! GameId,
-            gamesManager(NewGamesDict, NextGameCode + 1);
-        #acceptGame{pid = Pid, player = Player, gameCode = GameCode} -> 
+            gamesManag.er(NewGamesDict, NextGameCode + 1);
+        #acceptGame{pid = Pid, player = Player, gameCode = GameCode} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
-                {ok, #game{board = Board, playerX = PlayerX, playerO = undefined}} -> 
+                {ok, #game{board = Board, playerX = PlayerX, playerO = undefined}} ->
                     NewGamesDict = maps:put(GameCode, #game{board = Board, playerX = PlayerX, playerO = Player}, GamesDict),
                     Pid ! ok,
                     gamesManager(NewGamesDict, GameCode);
@@ -233,18 +233,18 @@ gamesManager(GamesDict, NextGameCode) ->
         #observe{gameCode = GameCode, player = Player} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
-                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
+                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} ->
                     % TODO podríamos revisar si ya está observando para no repetir
                     NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = [Player | Observers]},
                     gamesManager(maps:put(GameCode, NewGame, GamesDict), NextGameCode);
-                error -> 
+                error ->
                     error,
                     gamesManager(GamesDict, NextGameCode)
             end;
         #leave{gameCode = GameCode, player = Player} ->
             Game = maps:find(GameCode, GamesDict),
             case Game of
-                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} -> 
+                {ok, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}} ->
                     NewGame = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = lists:delete(Player, Observers)},
                     gamesManager(maps:put(GameCode, NewGame, GamesDict), NextGameCode);
                 error -> error,
@@ -253,14 +253,14 @@ gamesManager(GamesDict, NextGameCode) ->
     end.
 
 makePlay({X, Y}, #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn, observers = Observers}, Player) ->
-    if 
+    if
         element(X, element(Y, Board)) == e ->
             if
                 (Turn == x) and (Player == PlayerX) ->
                     Result = #game{board = replaceBoardPosition(Board, {X, Y}, x), playerX = PlayerX, playerO = PlayerO, turn = o, observers = Observers};
                 (Turn == o)  and (Player == PlayerO) ->
                     Result = #game{board = replaceBoardPosition(Board, {X, Y}, o), playerX = PlayerX, playerO = PlayerO, turn = x, observers = Observers};
-                true -> Result = error 
+                true -> Result = error
             end;
         true -> Result = error
     end,
