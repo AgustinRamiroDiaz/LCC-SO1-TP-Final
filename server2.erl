@@ -58,11 +58,13 @@ psocket(User = #user{name = undefined}) ->
     Result = gen_tcp:recv(User#user.socket, 0),
     case Result of
         {ok, {"CON", [Cmdid, NewName]}} ->
-            {Status, Args} = runCommand({"CON", [Cmdid, NewName]}, User),
-            respond(User, Status, Args),
-            case Status of
-                "OK" -> psocket(User#user{name = NewName});
-                "ERR" -> psocket(User)
+            case addUser(NewName) of
+                ok ->
+                    respond(User, "OK", [Cmdid]),
+                    psocket(User#user{name = NewName});
+                error ->
+                    respond(User, "ERR", [Cmdid]),
+                    psocket(User)
             end;
         {ok, {_, [Cmdid | _]}} ->
             respond(User, "ERR", [Cmdid, "Debe registrarse para ejecutar ese comando"]),
@@ -74,36 +76,34 @@ psocket(User = #user{name = undefined}) ->
             psocket(User = #user{name = undefined})
     end;
 psocket(User) ->
-    Result = gen_tcp:recv(User#user.socket, 0),
+    receive {pcommand, {StatusPCommand, ArgsPCommand}} ->
+        respond(User, StatusPCommand, ArgsPCommand)
+    after 0 -> ok
+    end,
+    Result = gen_tcp:recv(User#user.socket, 0, 0),
     case Result of
         {ok, {"CON", [Cmdid, _]}} ->
             respond(User, "ERR", [Cmdid, "Ya se encuentra registrado"]),
             psocket(User);
         {ok, {"BYE", [Cmdid]}} ->
-            {Status, Args} = runCommand({"BYE", [Cmdid]}, User),
-            respond(User, Status, Args),
-            case Status of
-                "OK" -> fin;
-                "ERR" -> psocket(User)
-            end;
+            bye(User),
+            respond(User, "OK", [Cmdid]);
         {ok, Command} ->
-            {Status, Args} = runCommand(User, Command),
+            {Status, Args} = runCommand(User, Command, self()),
             respond(User, Status, Args),
             psocket(User);
+        {error, timeout} ->
+            psocket(User);
         {error, Reason} ->
-            io:format("Se perdió la conexión con ~p (~p)~n", [User#user.name, Reason])
+            io:format("Se perdió la conexión con ~p (~p)~n", [User#user.name, Reason]),
+            bye(User)
     end.
 
-runCommand(User, Command = {_, [Cmdid | _]}) ->
+runCommand(User, Command = {_, [Cmdid | _]}, Pid) ->
     Result = getFreeNode(),
     case Result of
         {ok, Node} ->
-            spawn(Node, ?MODULE, pcommand, [User, Command, self()]),
-            receive
-                {Status, Args} -> {Status, Args}
-            after 3000 ->
-                {"ERR", [Cmdid, "No se pudo ejecutar el comando (timeout)"]}
-            end;
+            spawn(Node, ?MODULE, pcommand, [User, Command, Pid]);
         error ->
            {"ERR", [Cmdid, "No se pudo ejecutar el comando (no hay nodo)"]}
     end.
@@ -141,20 +141,11 @@ pnames(Names) ->
                 NewNames = sets:add_element(Name, Names),
                 Pid ! ok,
                 pnames(NewNames)
-            end;
-        {exists, Name, Pid} ->
-            Found = sets:is_element(Name, Names),
-            Pid ! Found,
-            pnames(Names)
+            end
     end.
 
 pcommand(User, Command, Pid) ->
     case Command of
-        {"CON", [Cmdid, Name]} ->
-            case registerNewUser(Name) of
-                ok -> Pid ! {"OK", [Cmdid]};
-                error -> Pid ! {"ERR", [Cmdid]}
-            end;
         {"LSG", [Cmdid]} ->
             case getAllGames() of
                 {ok, Games} -> Pid ! {"OK", [Cmdid, Games]};
@@ -185,11 +176,6 @@ pcommand(User, Command, Pid) ->
                 ok -> Pid ! {"OK", [Cmdid]};
                 error -> Pid ! {"ERR", [Cmdid, "No se pudo dejar de observar el juego"]}
             end;
-        {"BYE", [Cmdid]} ->
-            case bye(User) of
-                ok -> Pid ! {"OK", [Cmdid]};
-                error -> Pid ! {"ERR", [Cmdid, "No se pudo desconectar al jugador"]}
-            end;
         {_, [Cmdid | _]} ->
             Pid ! {"ERR", [Cmdid, "Comando inválido"]}
     end.
@@ -203,20 +189,6 @@ getFreeNode([NodeLoad | NodeLoads])  ->
     end.
 
 getAllNodes() -> [node() | nodes()].
-
-registerNewUser(NewName) ->
-    UserExists = userExists(NewName),
-    case UserExists of
-        true -> error;
-        false -> addUser(NewName);
-        error -> error
-    end.
-
-userExists(Name) ->
-    pnames ! {exists, Name, self()},
-    receive Exists -> Exists
-    after 1000 -> error
-    end.
 
 addUser(Name) ->
     pnames ! {add, Name, self()},
@@ -357,6 +329,8 @@ observeGame(User, {GameId, Node}) -> sendAndWait({pgames, Node}, {observe, User,
 leaveGame(User, {GameId, Node}) -> sendAndWait({pgames, Node}, {leave, User, GameId, self()}).
 
 bye(User) ->
+    %% TODO unregistrar
+
     Nodes = getAllNodes(),
     lists:foreach(fun (Node) -> {pgames, Node} ! {bye, User} end, Nodes),
     ok.
