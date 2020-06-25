@@ -6,8 +6,7 @@
 -define(DefaultPort, 6000).
 
 cliente() ->
-    {ok, Socket} = gen_tcp:connect("localhost", getPort(),
-				   [binary, {packet, 0}, {active, false}]),
+    {ok, Socket} = gen_tcp:connect("localhost", getPort(),[binary, {packet, 0}, {active, false}]),
     %% gen_tcp:send(Socket, term_to_binary(P)),
     {ok, StrIn} = io:fread("Enviar:", "~s"),
     gen_tcp:send(Socket, StrIn),

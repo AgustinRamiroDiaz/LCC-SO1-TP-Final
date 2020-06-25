@@ -10,11 +10,11 @@
 
 start() ->
     LSocket = listen(),
-    spawn(?MODULE, dispatcher, [LSocket]),
-    spawn(?MODULE, pbalance, [maps:new()]),
-    spawn(?MODULE, pstat, []),
-    spawn(?MODULE, pnames, [sets:new()]),
-    spawn(?MODULE, pgames, [maps:new(), 0]),
+    register(dispatcher, spawn(?MODULE, dispatcher, [LSocket])),
+    register(pbalance, spawn(?MODULE, pbalance, [maps:new()])),
+    register(pstat, spawn(?MODULE, pstat, [])),
+    register(pnames, spawn(?MODULE, pnames, [sets:new()])),
+    register(pgames, spawn(?MODULE, pgames, [maps:new(), 0])),
     started.
 
 listen() ->
@@ -57,23 +57,26 @@ dispatcher(LSocket) ->
 psocket(User = #user{name = undefined}) ->
     Result = gen_tcp:recv(User#user.socket, 0),
     case Result of
-        {ok, {"CON", [Cmdid, NewName]}} ->
-            case addUser(NewName) of
-                ok ->
-                    respond(User, "OK", [Cmdid]),
-                    psocket(User#user{name = NewName});
-                error ->
-                    respond(User, "ERR", [Cmdid]),
+        {ok, Packet} ->
+            case binary_to_term(Packet) of
+                {"CON", [Cmdid, NewName]} ->
+                    case addUser(NewName) of
+                        ok ->
+                            respond(User, "OK", [Cmdid]),
+                            psocket(User#user{name = NewName});
+                        error ->
+                            respond(User, "ERR", [Cmdid]),
+                            psocket(User)
+                    end;
+                {_, [Cmdid | _]} ->
+                    respond(User, "ERR", [Cmdid, "Debe registrarse para ejecutar ese comando"]),
+                    psocket(User);
+                _ ->
+                    respond(User, "ERR", ["Comando inválido"]),
                     psocket(User)
             end;
-        {ok, {_, [Cmdid | _]}} ->
-            respond(User, "ERR", [Cmdid, "Debe registrarse para ejecutar ese comando"]),
-            psocket(User);
         {error, Reason} ->
-            io:format("El socket se cerró (~p)~n", [Reason]);
-        _->
-            respond(User, "ERR", ["Comando inválido"]),
-            psocket(User = #user{name = undefined})
+            io:format("El socket se cerró (~p)~n", [Reason])
     end;
 psocket(User) ->
     receive {pcommand, {StatusPCommand, ArgsPCommand}} ->
@@ -82,16 +85,21 @@ psocket(User) ->
     end,
     Result = gen_tcp:recv(User#user.socket, 0, 0),
     case Result of
-        {ok, {"CON", [Cmdid, _]}} ->
-            respond(User, "ERR", [Cmdid, "Ya se encuentra registrado"]),
-            psocket(User);
-        {ok, {"BYE", [Cmdid]}} ->
-            bye(User),
-            respond(User, "OK", [Cmdid]);
-        {ok, Command} ->
-            {Status, Args} = runCommand(User, Command, self()),
-            respond(User, Status, Args),
-            psocket(User);
+        {ok, Packet} ->
+            case binary_to_term(Packet) of
+                {"CON", [Cmdid, _]} ->
+                    respond(User, "ERR", [Cmdid, "Ya se encuentra registrado"]),
+                    psocket(User);
+                {"BYE", [Cmdid]} ->
+                    bye(User),
+                    respond(User, "OK", [Cmdid]);
+                Command = {_, [_ | _]} ->
+                    runCommand(User, Command, self()),
+                    psocket(User);
+                _ ->
+                    respond(User, "ERR", ["Comando inválido"]),
+                    psocket(User)
+            end;
         {error, timeout} ->
             psocket(User);
         {error, Reason} ->
@@ -111,7 +119,8 @@ runCommand(User, Command = {_, [Cmdid | _]}, Pid) ->
 respond(User, Status, Args) ->
     Socket = User#user.socket,
     Response = #response{status = Status, args = Args},
-    gen_tcp:send(Socket, Response).
+    gen_tcp:send(Socket, term_to_binary(Response)),
+    io:format("Respuesta: ~p~n", [Response]).
 
 pbalance(Loads) ->
     receive
