@@ -5,7 +5,6 @@
 -define(EmptyBoard, {{e, e, e}, {e, e, e}, {e, e, e}}).
 
 -record(user, {socket, name}).
--record(response, {status, args}).
 -record(game, {board, playerX, playerO, turn, observers}).
 
 start() ->
@@ -90,9 +89,9 @@ psocket(User) ->
                 {"CON", [Cmdid, _]} ->
                     respond(User, "ERR", [Cmdid, "Ya se encuentra registrado"]),
                     psocket(User);
-                {"BYE", [Cmdid]} ->
+                {"BYE"} ->
                     bye(User),
-                    respond(User, "OK", [Cmdid]);
+                    respond(User, "OK", []);
                 Command = {_, [_ | _]} ->
                     runCommand(User, Command, self()),
                     psocket(User);
@@ -118,9 +117,7 @@ runCommand(User, Command = {_, [Cmdid | _]}, Pid) ->
 
 respond(User, Status, Args) ->
     Socket = User#user.socket,
-    Response = #response{status = Status, args = Args},
-    gen_tcp:send(Socket, term_to_binary(Response)),
-    io:format("Respuesta: ~p~n", [Response]).
+    gen_tcp:send(Socket, term_to_binary({Status, Args})).
 
 pbalance(Loads) ->
     receive
