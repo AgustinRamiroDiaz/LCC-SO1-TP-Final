@@ -78,7 +78,7 @@ psocket(User = #user{name = undefined}) ->
             io:format("El socket se cerró (~p)~n", [Reason])
     end;
 psocket(User) ->
-    receive {pcommand, {StatusPCommand, ArgsPCommand}} ->
+    receive {pcommand, StatusPCommand, ArgsPCommand} ->
         respond(User, StatusPCommand, ArgsPCommand)
     after 0 -> ok
     end,
@@ -117,6 +117,7 @@ runCommand(User, Command = {_, [Cmdid | _]}, Pid) ->
 
 respond(User, Status, Args) ->
     Socket = User#user.socket,
+    io:format("Respuesta: ~p~n", [{Status, Args}]),
     gen_tcp:send(Socket, term_to_binary({Status, Args})).
 
 pbalance(Loads) ->
@@ -154,36 +155,36 @@ pcommand(User, Command, Pid) ->
     case Command of
         {"LSG", [Cmdid]} ->
             case getAllGames() of
-                {ok, Games} -> Pid ! {"OK", [Cmdid, Games]};
-                error -> Pid ! {"ERR", [Cmdid, "No se pudo obtener la lista de juegos"]}
+                {ok, Games} -> Pid ! {pcommand, "OK", [Cmdid, Games]};
+                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo obtener la lista de juegos"]}
             end;
         {"NEW", [Cmdid]} ->
             case addGame(User) of
-                {ok, GameId} -> Pid ! {"OK", [Cmdid, {GameId, node()}]};
-                error -> Pid ! {"ERR", [Cmdid, "No se pudo crear el juego"]}
+                {ok, GameId} -> Pid ! {pcommand, "OK", [Cmdid, {GameId, node()}]};
+                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo crear el juego"]}
             end;
         {"ACC", [Cmdid, {GameId, Node}]} ->
             case acceptGame(User, {GameId, Node}) of
-                ok -> Pid ! {"OK", [Cmdid]};
-                error -> Pid ! {"ERR", [Cmdid, "No se pudo aceptar el juego"]}
+                ok -> Pid ! {pcommand, "OK", [Cmdid]};
+                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo aceptar el juego"]}
             end;
         {"PLA", [Cmdid, {GameId, Node}, Play]} ->
             case makePlay(Play, User, {GameId, Node}) of
-                ok -> Pid ! {"OK", [Cmdid]};
-                error -> Pid ! {"ERR", [Cmdid, "No se pudo realizar la jugada"]}
+                ok -> Pid ! {pcommand, "OK", [Cmdid]};
+                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo realizar la jugada"]}
             end;
         {"OBS", [Cmdid, {GameId, Node}]} ->
             case observeGame(User, {GameId, Node}) of
-                ok -> Pid ! {"OK", [Cmdid]};
-                error -> Pid ! {"ERR", [Cmdid, "No se pudo observar el juego"]}
+                ok -> Pid ! {pcommand, "OK", [Cmdid]};
+                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo observar el juego"]}
             end;
         {"LEA", [Cmdid, {GameId, Node}]} ->
             case leaveGame(User, {GameId, Node}) of
-                ok -> Pid ! {"OK", [Cmdid]};
-                error -> Pid ! {"ERR", [Cmdid, "No se pudo dejar de observar el juego"]}
+                ok -> Pid ! {pcommand, "OK", [Cmdid]};
+                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo dejar de observar el juego"]}
             end;
         {_, [Cmdid | _]} ->
-            Pid ! {"ERR", [Cmdid, "Comando inválido"]}
+            Pid ! {pcommand, "ERR", [Cmdid, "Comando inválido"]}
     end.
 
 getFreeNode() -> sendAndWait(pbalance, {node, self()}).
