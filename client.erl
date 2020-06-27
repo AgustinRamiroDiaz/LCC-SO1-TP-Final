@@ -50,8 +50,8 @@ output(Socket) ->
             case binary_to_term(Packet) of
                 {"UPD", [GameCode, GameTitle, {board, Board}]} ->
                     io:format("Partida ~p (~p):~n~p~n", [GameCode, GameTitle, Board]);
-                {"UPD", [GameCode, GameTitle, {forfeit, User}]} ->
-                    io:format("Partida ~p (~p):~nEl usuario ~p se rindió~n", [GameCode, GameTitle, User]);
+                {"UPD", [GameCode, GameTitle, {forfeit, Username}]} ->
+                    io:format("Partida ~p (~p):~nEl usuario ~p se rindió~n", [GameCode, GameTitle, Username]);
                 {Status, [Cmdid | Args]} ->
                     io:format("Comando ~p: ~p ~p~n", [Cmdid, Status, Args]);
                 Message ->

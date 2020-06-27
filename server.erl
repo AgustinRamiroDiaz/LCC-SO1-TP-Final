@@ -172,12 +172,12 @@ pcommand(User, Command, Pid) ->
             end;
         {"PLA", [Cmdid, {GameId, Node}, Play]} ->
             case makePlay(Play, User, {GameId, Node}) of
-                ok -> Pid ! {pcommand, "OK", [Cmdid]};
+                {ok, Update} -> Pid ! {pcommand, "OK", [Cmdid, Update]};
                 {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo realizar la jugada", Reason]}
             end;
         {"OBS", [Cmdid, {GameId, Node}]} ->
             case observeGame(User, {GameId, Node}) of
-                ok -> Pid ! {pcommand, "OK", [Cmdid]};
+                {ok, Update} -> Pid ! {pcommand, "OK", [Cmdid, Update]};
                 {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo observar el juego", Reason]}
             end;
         {"LEA", [Cmdid, {GameId, Node}]} ->
@@ -286,8 +286,9 @@ makePlay(forfeit, User, {GameId, Node}) ->
             if (Game#game.playerX == User) or (Game#game.playerO == User) ->
                 case sendAndWait({pgames, Node}, {remove, GameId}) of
                     ok ->
-                        updateWatchers({GameId, Node}, Game, {forfeit, User}),
-                        ok;
+                        % updateUser() otro usuario
+                        updateObservers({GameId, Node}, Game, {forfeit, User#user.name}),
+                        {ok, "Te rendiste"};
                     {error, Reason} -> {error, Reason}
                 end;
             true -> error
@@ -301,8 +302,9 @@ makePlay(Play, User, {GameId, Node}) ->
                 {ok, NewGame} ->
                     case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
                         ok ->
-                            updateWatchers({GameId, Node}, Game, {board, NewGame#game.board}),
-                            ok;
+                            % updateUser() otro usuario
+                            updateObservers({GameId, Node}, NewGame, {board, NewGame#game.board}),
+                            {ok, NewGame#game.board};
                         {error, Reason} -> {error, Reason}
                     end;
                 {error, Reason} -> {error, Reason}
@@ -317,7 +319,11 @@ observeGame(User, {GameId, Node}) ->
                 {error, "Los jugadores no pueden observar sus propias partidas"};
             true ->
                 NewGame = Game#game{observers = sets:add_element(User, Game#game.observers)},
-                sendAndWait({pgames, Node}, {update, GameId, NewGame})
+                Result = sendAndWait({pgames, Node}, {update, GameId, NewGame}),
+                case Result of
+                    ok -> {ok, NewGame#game.board};
+                    {error, Reason} -> {error, Reason}
+                end
             end;
         {error, Reason} -> {error, Reason}
     end.
@@ -349,15 +355,17 @@ makePlayOnBoard({X, Y}, Game = #game{board = Board, playerX = PlayerX, playerO =
         (Turn == o) and (Player == PlayerO) ->
             {ok, Game#game{board = replaceBoardPosition(Board, {X, Y}, o), turn = x}};
         true ->
-            {error, "No es tu turno~n"}
+            {error, "No es tu turno"}
         end;
     true ->
-        {error, "La casilla está ocupada~n"}
+        {error, "La casilla está ocupada"}
     end.
 
 replaceBoardPosition(Board, {X, Y}, Symbol) ->
     setelement(X, setelement(Y, element(X, Board), Symbol), Board).
 
-updateWatchers(GameCode, Game = #game{playerX = PlayerX, playerO = PlayerO, observers = Observers}, Message) ->
-    Receptors = [PlayerX, PlayerO | Observers],
-    lists:foreach(fun(Receptor) -> respond(Receptor, "UPD", [GameCode, getGameTitle(Game), Message]) end, Receptors).
+updateObservers(GameCode, Game, Message) ->
+    lists:foreach(fun(Observer) -> updateUser(Observer, GameCode, Game, Message) end, Game#game.observers).
+
+updateUser(User, GameCode, Game, Message) ->
+    respond(User, "UPD", [GameCode, getGameTitle(Game), Message]).
