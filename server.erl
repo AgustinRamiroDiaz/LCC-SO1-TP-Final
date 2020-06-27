@@ -1,5 +1,6 @@
 -module(server).
 -export([start/0, dispatcher/1, psocket/1, pbalance/1, pstat/0, pcommand/3, pnames/1, pgames/2]).
+-export([leaveGame/2, makePlay/3]).
 
 -define(DefaultPort, 6000).
 -define(EmptyBoard, {{e, e, e}, {e, e, e}, {e, e, e}}).
@@ -236,7 +237,7 @@ pgames(Games, NextGameId) ->
             end;
         {list, Pid} ->
             Node = node(),
-            GetGameData = fun ({GameId, Game}) -> {GameId, getGameTitle(Game), Node} end,
+            GetGameData = fun ({GameId, Game}) -> {{GameId, Node}, getGameTitle(Game)} end,
             Pid ! {ok, lists:map(GetGameData, maps:to_list(Games))},
             pgames(Games, NextGameId);
         _ -> ok
@@ -271,23 +272,26 @@ addGame(User) -> sendAndWait(pgames, {add, User}).
 acceptGame(User, {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
-            case Game#game.playerO of
-                undefined ->
-                    NewGame = Game#game{playerO = User, observers = sets:del_element(User, Game#game.observers)},
-                    sendAndWait({pgames, Node}, {update, GameId, NewGame});
-                _ -> {error, "La partida ya fue aceptada"}
+            if Game#game.playerO == undefined ->
+                NewGame = Game#game{playerO = User, observers = sets:del_element(User, Game#game.observers)},
+                case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
+                    ok -> updateOponent(User, {GameId, Node}, NewGame, {accepted, User#user.name});
+                    {error, Reason} -> {error, Reason}
+                end;
+            true -> {error, "La partida ya fue aceptada"}
             end;
         {error, Reason} -> {error, Reason}
     end.
 
-makePlay(forfeit, User, {GameId, Node}) ->
+makePlay(forfeit, User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
             if (Game#game.playerX == User) or (Game#game.playerO == User) ->
                 case sendAndWait({pgames, Node}, {remove, GameId}) of
                     ok ->
-                        % updateUser() otro usuario
-                        updateObservers({GameId, Node}, Game, {forfeit, User#user.name}),
+                        Response = {forfeit, User#user.name},
+                        updateOponent(User, GameCode, Game, Response),
+                        updateObservers(GameCode, Game, Response),
                         {ok, "Te rendiste"};
                     {error, Reason} -> {error, Reason}
                 end;
@@ -295,15 +299,16 @@ makePlay(forfeit, User, {GameId, Node}) ->
             end;
         {error, Reason} -> {error, Reason}
     end;
-makePlay(Play, User, {GameId, Node}) ->
+makePlay(Play, User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
             case makePlayOnBoard(Play, Game, User) of
                 {ok, NewGame} ->
                     case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
                         ok ->
-                            % updateUser() otro usuario
-                            updateObservers({GameId, Node}, NewGame, {board, NewGame#game.board}),
+                            Response = {board, NewGame#game.board},
+                            updateOponent(User, GameCode, Game, Response),
+                            updateObservers(GameCode, NewGame, Response),
                             {ok, NewGame#game.board};
                         {error, Reason} -> {error, Reason}
                     end;
@@ -340,7 +345,7 @@ leaveGame(User, {GameId, Node}) ->
 getGame(GameId, Node) -> sendAndWait({pgames, Node}, {get, GameId}).
 
 bye(User) ->
-    AbandonGame = fun ({GameId, _, Node}) ->
+    AbandonGame = fun ({{GameId, Node}, _}) ->
         spawn(?MODULE, leaveGame, [User, {GameId, Node}]),
         spawn(?MODULE, makePlay, [forfeit, User, {GameId, Node}])
     end,
@@ -348,24 +353,53 @@ bye(User) ->
     removeUser(User#user.name),
     gen_tcp:close(User#user.socket).
 
-makePlayOnBoard({X, Y}, Game = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn}, Player) ->
-    if element(X, element(Y, Board)) == e ->
-        if (Turn == x) and (Player == PlayerX) ->
-            {ok, Game#game{board = replaceBoardPosition(Board, {X, Y}, x), turn = o}};
-        (Turn == o) and (Player == PlayerO) ->
-            {ok, Game#game{board = replaceBoardPosition(Board, {X, Y}, o), turn = x}};
-        true ->
-            {error, "No es tu turno"}
+makePlayOnBoard(Play, Game = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn}, Player) ->
+    case Turn of
+        x ->
+            IsTheirTurn = Player == PlayerX,
+            NextTurn = o;
+        o ->
+            IsTheirTurn = Player == PlayerO,
+            NextTurn = x
+    end,
+    if IsTheirTurn ->
+        case replaceBoardPosition(Play, Board, Turn) of
+            {ok, NewBoard} -> {ok, Game#game{board = NewBoard, turn = NextTurn}};
+            {error, Reason} -> {error, Reason}
         end;
     true ->
-        {error, "La casilla está ocupada"}
+        {error, "No es tu turno"}
     end.
 
-replaceBoardPosition(Board, {X, Y}, Symbol) ->
-    setelement(X, setelement(Y, element(X, Board), Symbol), Board).
+replaceBoardPosition({X, Y}, Board, Symbol) ->
+    IsValid = (X >= 1) and (X =< 3) and (Y >= 1) and (Y =< 3),
+    if IsValid ->
+        if element(Y, element(X, Board)) == e ->
+            NewBoard = setelement(X, Board, setelement(Y, element(X, Board), Symbol)),
+            {ok, NewBoard};
+        true ->
+            {error, "La casilla está ocupada"}
+        end;
+    true -> {error, "La posición no es válida"}
+    end.
+
+
+updateOponent(User, GameCode, Game, Message) ->
+    if (User == Game#game.playerX) ->
+        Oponent = Game#game.playerO;
+    true ->
+        Oponent = Game#game.playerX
+    end,
+    if Oponent /= undefined ->
+        updateUser(Oponent, GameCode, Game, Message);
+    true ->
+        error
+    end.
 
 updateObservers(GameCode, Game, Message) ->
-    lists:foreach(fun(Observer) -> updateUser(Observer, GameCode, Game, Message) end, Game#game.observers).
+    UpdateObserver = fun (Observer) -> updateUser(Observer, GameCode, Game, Message) end,
+    Observers = sets:to_list(Game#game.observers),
+    lists:foreach(UpdateObserver, Observers).
 
 updateUser(User, GameCode, Game, Message) ->
     respond(User, "UPD", [GameCode, getGameTitle(Game), Message]).
