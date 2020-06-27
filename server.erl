@@ -237,7 +237,7 @@ pgames(Games, NextGameId) ->
         {list, Pid} ->
             Node = node(),
             GetGameData = fun ({GameId, Game}) -> {GameId, getGameTitle(Game), Node} end,
-            Pid ! lists:map(GetGameData, maps:to_list(Games)),
+            Pid ! {ok, lists:map(GetGameData, maps:to_list(Games))},
             pgames(Games, NextGameId);
         _ -> ok
     end.
@@ -254,8 +254,8 @@ getGameTitle(Game) ->
 getAllGames() ->
     Nodes = getAllNodes(),
     Pid = self(),
-    lists:foreach(fun (Node) -> {pbalance, Node} ! {list, Pid} end, Nodes),
-    GetGames = fun (_) -> receive Games -> Games after 1000 -> [] end end,
+    lists:foreach(fun (Node) -> {pgames, Node} ! {list, Pid} end, Nodes),
+    GetGames = fun (_) -> receive {ok, Games} -> Games after 1000 -> [] end end,
     GamesLists = lists:map(GetGames, Nodes),
     lists:merge(GamesLists).
 
