@@ -51,14 +51,30 @@ output(Socket) ->
                 {"UPD", [GameCode, GameTitle, {board, Board}]} ->
                     io:format("Partida ~p (~p):~n", [GameCode, GameTitle]),
                     showBoard(Board);
-                {"UPD", [GameCode, GameTitle, {forfeit, Username}]} ->
-                    io:format("Partida ~p (~p):~nEl usuario ~p se rindió~n", [GameCode, GameTitle, Username]);
+                %% Caso jugadores
+                {"UPD", [GameCode, GameTitle, {defeat, Board}]} ->
+                    io:format("Partida ~p (~p):~nPerdiste!~n", [GameCode, GameTitle]),
+                    showBoard(Board);
+                {"UPD", [GameCode, GameTitle, {tie, Board}]} ->
+                    io:format("Partida ~p (~p):~nEmpataste!~n", [GameCode, GameTitle]),
+                    showBoard(Board);
+                {"UPD", [GameCode, GameTitle, victory]} ->
+                    io:format("Partida ~p (~p):~nGanaste!~n~n", [GameCode, GameTitle]);
                 {"UPD", [GameCode, GameTitle, {accepted, Username}]} ->
-                    io:format("Partida ~p (~p):~nEl usuario ~p aceptó la partida~n", [GameCode, GameTitle, Username]);
+                    io:format("Partida ~p (~p):~nEl usuario ~p aceptó la partida~n~n", [GameCode, GameTitle, Username]);
+                %% Caso observadores
+                {"UPD", [GameCode, GameTitle, {ended, none, Board}]} ->
+                    io:format("Partida ~p (~p):~nEmpataron~n~n", [GameCode, GameTitle]),
+                    showBoard(Board);
+                {"UPD", [GameCode, GameTitle, {ended, Username, Board}]} ->
+                    io:format("Partida ~p (~p):~nEl usuario ~p ganó~n~n", [GameCode, GameTitle, Username]),
+                    showBoard(Board);
+                {"UPD", [GameCode, GameTitle, {forfeit, Username}]} ->
+                    io:format("Partida ~p (~p):~nEl usuario ~p se rindió~n~n", [GameCode, GameTitle, Username]);
                 {Status, [Cmdid | Args]} ->
-                    io:format("Comando ~p: ~p ~p~n", [Cmdid, Status, Args]);
+                    io:format("Comando ~p: ~p ~p~n~n", [Cmdid, Status, Args]);
                 Message ->
-                    io:format("Mensaje del servidor: ~p~n", [Message])
+                    io:format("Mensaje del servidor: ~p~n~n", [Message])
             end,
             output(Socket);
         {error, closed} ->
@@ -97,6 +113,6 @@ getServerAddress(Input) ->
 
 showBoard({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
     io:format(
-        " ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n",
+        " ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n~n",
         [P11, P21, P31, P12, P22, P32, P13, P23, P33]
     ).

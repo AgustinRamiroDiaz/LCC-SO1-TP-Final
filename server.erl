@@ -289,8 +289,8 @@ makePlay(forfeit, User, GameCode = {GameId, Node}) ->
             if (Game#game.playerX == User) or (Game#game.playerO == User) ->
                 case sendAndWait({pgames, Node}, {remove, GameId}) of
                     ok ->
+                        updateOponent(User, GameCode, Game, victory),
                         Response = {forfeit, User#user.name},
-                        updateOponent(User, GameCode, Game, Response),
                         updateObservers(GameCode, Game, Response),
                         {ok, "Te rendiste"};
                     {error, Reason} -> {error, Reason}
@@ -304,13 +304,34 @@ makePlay(Play, User, GameCode = {GameId, Node}) ->
         {ok, Game} ->
             case makePlayOnBoard(Play, Game, User) of
                 {ok, NewGame} ->
-                    case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
-                        ok ->
-                            Response = {board, NewGame#game.board},
-                            updateOponent(User, GameCode, Game, Response),
-                            updateObservers(GameCode, NewGame, Response),
-                            {ok, NewGame#game.board};
-                        {error, Reason} -> {error, Reason}
+                    NewBoard = NewGame#game.board,
+                    IsWinner = isWinner(NewBoard, Game#game.turn),
+                    IsTie = isTie(NewBoard),
+                    if IsWinner ->
+                        case sendAndWait({pgames, Node}, {remove, GameId}) of
+                            ok ->
+                                updateOponent(User, GameCode, Game, {defeat, NewBoard}),
+                                updateObservers(GameCode, Game, {ended, User#user.name, NewBoard}),
+                                {ok, "Ganaste"};
+                            {error, Reason} -> {error, Reason}
+                        end;
+                    IsTie ->
+                        case sendAndWait({pgames, Node}, {remove, GameId}) of
+                            ok ->
+                                updateOponent(User, GameCode, Game, {tie, NewBoard}),
+                                updateObservers(GameCode, Game, {ended, none, NewBoard}),
+                                {ok, "Empataste"};
+                            {error, Reason} -> {error, Reason}
+                        end;
+                    true ->
+                        case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
+                            ok ->
+                                Response = {board, NewBoard},
+                                updateOponent(User, GameCode, Game, Response),
+                                updateObservers(GameCode, NewGame, Response),
+                                {ok, NewBoard};
+                            {error, Reason} -> {error, Reason}
+                        end
                     end;
                 {error, Reason} -> {error, Reason}
             end;
@@ -371,11 +392,12 @@ makePlayOnBoard(Play, Game = #game{board = Board, playerX = PlayerX, playerO = P
         {error, "No es tu turno"}
     end.
 
-replaceBoardPosition({X, Y}, Board, Symbol) ->
+replaceBoardPosition({X, Y}, Board, NewSymbol) ->
     IsValid = (X >= 1) and (X =< 3) and (Y >= 1) and (Y =< 3),
     if IsValid ->
-        if element(Y, element(X, Board)) == e ->
-            NewBoard = setelement(X, Board, setelement(Y, element(X, Board), Symbol)),
+        Symbol = getSymbol(X, Y, Board),
+        if Symbol == e ->
+            NewBoard = setSymbol(X, Y, Board, NewSymbol),
             {ok, NewBoard};
         true ->
             {error, "La casilla está ocupada"}
@@ -383,6 +405,38 @@ replaceBoardPosition({X, Y}, Board, Symbol) ->
     true -> {error, "La posición no es válida"}
     end.
 
+getSymbol(X, Y, Board) -> element(Y, element(X, Board)).
+
+setSymbol(X, Y, Board, Symbol) -> setelement(X, Board, setelement(Y, element(X, Board), Symbol)).
+
+isWinner({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}, Turn) ->
+    PossibleWins = [
+        [P11, P12, P13],
+        [P21, P22, P23],
+        [P31, P32, P33],
+        [P11, P21, P31],
+        [P12, P22, P32],
+        [P13, P23, P33],
+        [P11, P22, P33],
+        [P13, P22, P31]
+    ],
+    lists:any(fun (List) ->
+        lists:all(fun (Symbol) -> Symbol == Turn end, List)
+    end, PossibleWins).
+
+isTie({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
+    Symbols = [P11, P12, P13, P21, P22, P23, P31, P32, P33],
+    lists:all(fun (Symbol) -> Symbol /= e end, Symbols).
+
+% blabla({X, Y}, {{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
+%     if
+%     (getSymbol(X, 1, Board) == getSymbol(X, 2, Board)) and (getSymbol(X, 2, Board) == getSymbol(X, 3, Board)) ->
+%         true;
+%     (getSymbol(1, Y, Board) == getSymbol(2, Y, Board)) and (getSymbol(2, Y, Board) == getSymbol(3, Y, Board)) ->
+%         true;
+%     Y == X and (getSymbol(1, 1, Board) == getSymbol(2, 2, Board)) and (getSymbol(2, 2, Board) == getSymbol(3, 3, Board)) -> true;
+%     Y == 4-X and (getSymbol(3, 1, Board) == getSymbol(2, 2, Board)) and (getSymbol(2, 2, Board) == getSymbol(1, 3, Board)) -> true
+%     end.
 
 updateOponent(User, GameCode, Game, Message) ->
     if (User == Game#game.playerX) ->
