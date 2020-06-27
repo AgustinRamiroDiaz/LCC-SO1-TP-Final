@@ -29,19 +29,14 @@ listen() ->
     end.
 
 getPort() ->
-    case init:get_plain_arguments() of
-        [Port] ->
-            try list_to_integer(Port) of
-                PortNumber -> PortNumber
+    case init:get_argument(port) of
+        {ok, [[Port]]} ->
+            try list_to_integer(Port)
             catch error:badarg ->
                 io:format("El puerto solicitado es invalido~n"),
                 exit(badarg)
             end;
-        [] ->
-            ?DefaultPort;
-        _ ->
-            io:format("Uso incorrecto"),
-            exit(badarg)
+        _ -> ?DefaultPort
     end.
 
 dispatcher(LSocket) ->
@@ -49,7 +44,9 @@ dispatcher(LSocket) ->
     case Result of
         {ok, Socket} ->
             io:format("Cliente conectado~n"),
-            spawn(?MODULE, psocket, [#user{socket = Socket, name = undefined}])
+            spawn(?MODULE, psocket, [#user{socket = Socket, name = undefined}]);
+        {error, Reason} ->
+            io:format("No se pudo aceptar un cliente (~p)~n", [Reason])
     end,
     dispatcher(LSocket).
 
@@ -63,8 +60,8 @@ psocket(User = #user{name = undefined}) ->
                         ok ->
                             respond(User, "OK", [Cmdid]),
                             psocket(User#user{name = NewName});
-                        error ->
-                            respond(User, "ERR", [Cmdid]),
+                        {error, Reason} ->
+                            respond(User, "ERR", [Cmdid, Reason]),
                             psocket(User)
                     end;
                 {_, [Cmdid | _]} ->
@@ -93,7 +90,10 @@ psocket(User) ->
                     bye(User),
                     respond(User, "OK", []);
                 Command = {_, [_ | _]} ->
-                    runCommand(User, Command, self()),
+                    case runCommand(User, Command, self()) of
+                        {"ERR", Args} -> respond(User, "ERR", Args);
+                        _ -> ok
+                    end,
                     psocket(User);
                 _ ->
                     respond(User, "ERR", ["Comando inválido"]),
@@ -110,9 +110,10 @@ runCommand(User, Command = {_, [Cmdid | _]}, Pid) ->
     Result = getFreeNode(),
     case Result of
         {ok, Node} ->
-            spawn(Node, ?MODULE, pcommand, [User, Command, Pid]);
-        error ->
-           {"ERR", [Cmdid, "No se pudo ejecutar el comando (no hay nodo)"]}
+            spawn(Node, ?MODULE, pcommand, [User, Command, Pid]),
+            io:format("Spawned ~p~n", [Command]);
+        {error, Reason} ->
+           {"ERR", [Cmdid, "No se pudo ejecutar el comando", Reason]}
     end.
 
 respond(User, Status, Args) ->
@@ -133,61 +134,62 @@ pbalance(Loads) ->
 
 pstat() ->
     Load = erlang:statistics(run_queue),
-    lists:foreach(fun (Node) -> {Node, pbalance} ! {load, Node, Load} end, getAllNodes()),
+    lists:foreach(fun (Node) -> {pbalance, Node} ! {load, Node, Load} end, getAllNodes()),
     timer:sleep(500),
     pstat().
 
 pnames(Names) ->
     receive
-        {add, Name, Pid} ->
+        {{add, Name}, Pid} ->
             Found = sets:is_element(Name, Names),
             if Found ->
-                Pid ! error,
+                Pid ! {error, "El nombre se encuentra ocupado"},
                 pnames(Names);
             true ->
                 NewNames = sets:add_element(Name, Names),
                 Pid ! ok,
                 pnames(NewNames)
-            end
+            end;
+        {{remove, Name}, Pid} ->
+            NewNames = sets:del_element(Name, Names),
+            Pid ! ok,
+            pnames(NewNames)
     end.
 
 pcommand(User, Command, Pid) ->
     case Command of
-        {"LSG", [Cmdid]} ->
-            case getAllGames() of
-                {ok, Games} -> Pid ! {pcommand, "OK", [Cmdid, Games]};
-                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo obtener la lista de juegos"]}
-            end;
+        {"LSG", [Cmdid]} -> Pid ! {pcommand, "OK", [Cmdid, getAllGames()]};
         {"NEW", [Cmdid]} ->
             case addGame(User) of
                 {ok, GameId} -> Pid ! {pcommand, "OK", [Cmdid, {GameId, node()}]};
-                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo crear el juego"]}
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo crear el juego", Reason]}
             end;
         {"ACC", [Cmdid, {GameId, Node}]} ->
             case acceptGame(User, {GameId, Node}) of
                 ok -> Pid ! {pcommand, "OK", [Cmdid]};
-                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo aceptar el juego"]}
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo aceptar el juego", Reason]}
             end;
         {"PLA", [Cmdid, {GameId, Node}, Play]} ->
             case makePlay(Play, User, {GameId, Node}) of
                 ok -> Pid ! {pcommand, "OK", [Cmdid]};
-                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo realizar la jugada"]}
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo realizar la jugada", Reason]}
             end;
         {"OBS", [Cmdid, {GameId, Node}]} ->
             case observeGame(User, {GameId, Node}) of
                 ok -> Pid ! {pcommand, "OK", [Cmdid]};
-                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo observar el juego"]}
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo observar el juego", Reason]}
             end;
         {"LEA", [Cmdid, {GameId, Node}]} ->
             case leaveGame(User, {GameId, Node}) of
                 ok -> Pid ! {pcommand, "OK", [Cmdid]};
-                error -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo dejar de observar el juego"]}
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo dejar de observar el juego", Reason]}
             end;
         {_, [Cmdid | _]} ->
             Pid ! {pcommand, "ERR", [Cmdid, "Comando inválido"]}
     end.
 
-getFreeNode() -> sendAndWait(pbalance, {node, self()}).
+getFreeNode() -> sendAndWait(pbalance, node).
+getFreeNode([]) -> {error, "No se encontró ningún nodo disponible"};
 getFreeNode([NodeLoad]) -> NodeLoad;
 getFreeNode([NodeLoad | NodeLoads])  ->
     LowestLoadNode = getFreeNode(NodeLoads),
@@ -197,11 +199,9 @@ getFreeNode([NodeLoad | NodeLoads])  ->
 
 getAllNodes() -> [node() | nodes()].
 
-addUser(Name) ->
-    pnames ! {add, Name, self()},
-    receive Result -> Result
-    after 1000 -> error
-    end.
+addUser(Name) -> sendAndWait(pnames, {add, Name}).
+
+removeUser(Name) -> sendAndWait(pnames, {remove, Name}).
 
 pgames(Games, NextGameId) ->
     receive
@@ -211,19 +211,28 @@ pgames(Games, NextGameId) ->
             Pid ! {ok, NextGameId},
             pgames(NewGames, NextGameId + 1);
         {{update, GameId, NewGame}, Pid} ->
-            case maps:find(GameId, Games) of
-                {ok, _} ->
-                    NewGames = maps:put(GameId, NewGame, Games),
-                    Pid ! ok,
-                    pgames(NewGames, NextGameId);
-                error ->
-                    Pid ! error,
-                    pgames(Games, NextGameId)
+            Found = maps:is_key(GameId, Games),
+            if Found ->
+                NewGames = maps:put(GameId, NewGame, Games),
+                Pid ! ok,
+                pgames(NewGames, NextGameId);
+            true ->
+                Pid ! {error, "No se pudo encontrar la partida"},
+                pgames(Games, NextGameId)
             end;
         {{remove, GameId}, Pid} ->
             NewGames = maps:remove(GameId, Games),
             Pid ! ok,
             pgames(NewGames, NextGameId);
+        {{get, GameId}, Pid} ->
+            case maps:find(GameId, Games) of
+                {ok, Game} ->
+                    Pid ! {ok, Game},
+                    pgames(Games, NextGameId);
+                error ->
+                    Pid ! {error, "No se pudo encontrar la partida"},
+                    pgames(Games, NextGameId)
+            end;
         {list, Pid} ->
             Node = node(),
             GetGameData = fun ({GameId, Game}) -> {GameId, getGameTitle(Game), Node} end,
@@ -253,7 +262,7 @@ sendAndWait(Receiver, Message) -> sendAndWait(Receiver, Message, 1000).
 sendAndWait(Receiver, Message, Timeout) ->
     Receiver ! {Message, self()},
     receive Result -> Result
-    after Timeout -> error
+    after Timeout -> {error, "El pedido tomó demasiado tiempo"}
     end.
 
 addGame(User) -> sendAndWait(pgames, {add, User}).
@@ -265,9 +274,9 @@ acceptGame(User, {GameId, Node}) ->
                 undefined ->
                     NewGame = Game#game{playerO = User, observers = sets:del_element(User, Game#game.observers)},
                     sendAndWait({pgames, Node}, {update, GameId, NewGame});
-                _ -> error
+                _ -> {error, "La partida ya fue aceptada"}
             end;
-        error -> error
+        {error, Reason} -> {error, Reason}
     end.
 
 makePlay(forfeit, User, {GameId, Node}) ->
@@ -276,13 +285,13 @@ makePlay(forfeit, User, {GameId, Node}) ->
             if (Game#game.playerX == User) or (Game#game.playerO == User) ->
                 case sendAndWait({pgames, Node}, {remove, GameId}) of
                     ok ->
-                        updateWatchers(GameId, Game, {forfeit, User}),
+                        updateWatchers({GameId, Node}, Game, {forfeit, User}),
                         ok;
-                    error -> error
+                    {error, Reason} -> {error, Reason}
                 end;
             true -> error
             end;
-        error -> error
+        {error, Reason} -> {error, Reason}
     end;
 makePlay(Play, User, {GameId, Node}) ->
     case getGame(GameId, Node) of
@@ -291,25 +300,25 @@ makePlay(Play, User, {GameId, Node}) ->
                 {ok, NewGame} ->
                     case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
                         ok ->
-                            updateWatchers(GameId, Game, {board, GameId, getGameTitle(Game), NewGame#game.board}),
+                            updateWatchers({GameId, Node}, Game, {board, NewGame#game.board}),
                             ok;
-                        error -> error
+                        {error, Reason} -> {error, Reason}
                     end;
-                error ->error
+                {error, Reason} -> {error, Reason}
             end;
-        error -> error
+        {error, Reason} -> {error, Reason}
     end.
 
 observeGame(User, {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
             if (User == Game#game.playerO) or (User == Game#game.playerX) ->
-                error;
+                {error, "Los jugadores no pueden observar sus propias partidas"};
             true ->
                 NewGame = Game#game{observers = sets:add_element(User, Game#game.observers)},
                 sendAndWait({pgames, Node}, {update, GameId, NewGame})
             end;
-        error -> error
+        {error, Reason} -> {error, Reason}
     end.
 
 
@@ -318,22 +327,19 @@ leaveGame(User, {GameId, Node}) ->
         {ok, Game} ->
             NewGame = Game#game{observers = sets:del_element(User, Game#game.observers)},
             sendAndWait({pgames, Node}, {update, GameId, NewGame});
-        error -> error
+        {error, Reason} -> {error, Reason}
     end.
 
-getGame(GameId, Node) ->
-    {pgames, Node} ! {get, GameId},
-    receive Result -> Result
-    after 1000 -> error
-    end.
+getGame(GameId, Node) -> sendAndWait({pgames, Node}, {get, GameId}).
 
 bye(User) ->
-    lists:foreach(
-        fun ({GameId, _, Node}) ->
-            spawn(?MODULE, leaveGame, [User, {GameId, Node}]),
-            spawn(?MODULE, makePlay, [forfeit, User, {GameId, Node}])
-        end, getAllGames()),
-    ok.
+    AbandonGame = fun ({GameId, _, Node}) ->
+        spawn(?MODULE, leaveGame, [User, {GameId, Node}]),
+        spawn(?MODULE, makePlay, [forfeit, User, {GameId, Node}])
+    end,
+    lists:foreach(AbandonGame, getAllGames()),
+    removeUser(User#user.name),
+    gen_tcp:close(User#user.socket).
 
 makePlayOnBoard({X, Y}, Game = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn}, Player) ->
     if element(X, element(Y, Board)) == e ->
@@ -342,15 +348,15 @@ makePlayOnBoard({X, Y}, Game = #game{board = Board, playerX = PlayerX, playerO =
         (Turn == o) and (Player == PlayerO) ->
             {ok, Game#game{board = replaceBoardPosition(Board, {X, Y}, o), turn = x}};
         true ->
-            error
+            {error, "No es tu turno~n"}
         end;
     true ->
-        error
+        {error, "La casilla está ocupada~n"}
     end.
 
 replaceBoardPosition(Board, {X, Y}, Symbol) ->
     setelement(X, setelement(Y, element(X, Board), Symbol), Board).
 
-updateWatchers(GameId, #game{playerX = PlayerX, playerO = PlayerO, observers = Observers}, Message) ->
-    Receptors = [PlayerX, PlayerO, Observers],
-    lists:foreach(fun(Receptor) -> respond(Receptor, "UPD", [GameId, Message]) end, Receptors).
+updateWatchers(GameCode, Game = #game{playerX = PlayerX, playerO = PlayerO, observers = Observers}, Message) ->
+    Receptors = [PlayerX, PlayerO | Observers],
+    lists:foreach(fun(Receptor) -> respond(Receptor, "UPD", [GameCode, getGameTitle(Game), Message]) end, Receptors).
