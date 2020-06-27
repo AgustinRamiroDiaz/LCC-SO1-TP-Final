@@ -72,7 +72,8 @@ psocket(User = #user{name = undefined}) ->
                     psocket(User)
             end;
         {error, Reason} ->
-            io:format("El socket se cerró (~p)~n", [Reason])
+            io:format("El socket se cerró (~p)~n", [Reason]),
+            gen_tcp:close(User#user.socket)
     end;
 psocket(User) ->
     receive {pcommand, StatusPCommand, ArgsPCommand} ->
