@@ -90,7 +90,7 @@ output(Socket) ->
                     io:format("Error al conectarte (~p)~n~n", [Reason]);
                 {'OK', [Cmdid, 'LSG', []]} ->
                     io:format("Comando ~p~n", [Cmdid]),
-                    io:format("No hay partidas disponibles:~n~n");
+                    io:format("No hay partidas disponibles~n~n");
                 {'OK', [Cmdid, 'LSG', Games]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Partidas disponibles:~n"),
