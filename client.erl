@@ -35,6 +35,8 @@ getArguments(CMD, ListOfArgs) ->
         case {CMD, ListOfArgs} of
             {'ACC', [GameId, Node]} ->
                 Args = [GetGameCode(GameId, Node)];
+            {'PLA', [GameId, Node, Play]} ->
+                Args = [GetGameCode(GameId, Node), list_to_atom(Play)];
             {'PLA', [GameId, Node, X, Y]} ->
                 Args = [GetGameCode(GameId, Node), {list_to_integer(X), list_to_integer(Y)}];
             {'OBS', [GameId, Node]} ->

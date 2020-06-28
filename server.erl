@@ -89,11 +89,11 @@ psocket(User) ->
         {ok, Packet} ->
             case binary_to_term(Packet) of
                 {'CON', [Cmdid, _]} ->
-                    respond(User, 'ERR', [Cmdid, "Ya se encuentra registrado"]),
+                    respond(User, 'ERR', [Cmdid, 'CON', "Ya se encuentra registrado"]),
                     psocket(User);
                 {'BYE', [Cmdid]} ->
                     bye(User),
-                    respond(User, 'OK', [Cmdid]);
+                    respond(User, 'OK', ['BYE', Cmdid]);
                 Command = {_, [_ | _]} ->
                     case runCommand(User, Command) of
                         {'ERR', Args} -> respond(User, 'ERR', Args);
