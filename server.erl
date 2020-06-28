@@ -59,14 +59,14 @@ psocket(User = #user{name = undefined}) ->
                 {"CON", [Cmdid, NewName]} ->
                     case addUser(NewName) of
                         ok ->
-                            respond(User, "OK", [Cmdid]),
+                            respond(User, "OK", [Cmdid, "CON"]),
                             psocket(User#user{name = NewName});
                         {error, Reason} ->
-                            respond(User, "ERR", [Cmdid, Reason]),
+                            respond(User, "ERR", [Cmdid, "CON", Reason]),
                             psocket(User)
                     end;
-                {_, [Cmdid | _]} ->
-                    respond(User, "ERR", [Cmdid, "Debe registrarse para ejecutar ese comando"]),
+                {CMD, [Cmdid | _]} ->
+                    respond(User, "ERR", [Cmdid, CMD, "No se encuentra registrado"]),
                     psocket(User);
                 _ ->
                     respond(User, "ERR", ["Comando inválido"]),
@@ -112,15 +112,13 @@ runCommand(User, Command = {_, [Cmdid | _]}, Pid) ->
     Result = getFreeNode(),
     case Result of
         {ok, Node} ->
-            spawn(Node, ?MODULE, pcommand, [User, Command, Pid]),
-            io:format("Spawned ~p~n", [Command]);
+            spawn(Node, ?MODULE, pcommand, [User, Command, Pid]);
         {error, Reason} ->
            {"ERR", [Cmdid, "No se pudo ejecutar el comando", Reason]}
     end.
 
 respond(User, Status, Args) ->
     Socket = User#user.socket,
-    io:format("Respuesta: ~p~n", [{Status, Args}]),
     gen_tcp:send(Socket, term_to_binary({Status, Args})).
 
 pbalance(Loads) ->
@@ -160,34 +158,34 @@ pnames(Names) ->
 
 pcommand(User, Command, Pid) ->
     case Command of
-        {"LSG", [Cmdid]} -> Pid ! {pcommand, "OK", [Cmdid, getAllGames()]};
+        {"LSG", [Cmdid]} -> Pid ! {pcommand, "OK", [Cmdid, "LSG", getAllGames()]};
         {"NEW", [Cmdid]} ->
             case addGame(User) of
-                {ok, GameId} -> Pid ! {pcommand, "OK", [Cmdid, {GameId, node()}]};
-                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo crear el juego", Reason]}
+                {ok, GameId} -> Pid ! {pcommand, "OK", [Cmdid, "NEW", {GameId, node()}]};
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "NEW", Reason]}
             end;
         {"ACC", [Cmdid, {GameId, Node}]} ->
             case acceptGame(User, {GameId, Node}) of
-                ok -> Pid ! {pcommand, "OK", [Cmdid]};
-                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo aceptar el juego", Reason]}
+                {ok, Board} -> Pid ! {pcommand, "OK", [Cmdid, "ACC", {GameId, Node}, Board]};
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "ACC", {GameId, Node}, Reason]}
             end;
         {"PLA", [Cmdid, {GameId, Node}, Play]} ->
             case makePlay(Play, User, {GameId, Node}) of
-                {ok, Update} -> Pid ! {pcommand, "OK", [Cmdid, Update]};
-                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo realizar la jugada", Reason]}
+                {ok, Update} -> Pid ! {pcommand, "OK", [Cmdid, "PLA", {GameId, Node}, Update]};
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "PLA", {GameId, Node}, Reason]}
             end;
         {"OBS", [Cmdid, {GameId, Node}]} ->
             case observeGame(User, {GameId, Node}) of
-                {ok, Update} -> Pid ! {pcommand, "OK", [Cmdid, Update]};
-                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo observar el juego", Reason]}
+                {ok, Board} -> Pid ! {pcommand, "OK", [Cmdid, "OBS", {GameId, Node}, Board]};
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "OBS", {GameId, Node}, Reason]}
             end;
         {"LEA", [Cmdid, {GameId, Node}]} ->
             case leaveGame(User, {GameId, Node}) of
-                ok -> Pid ! {pcommand, "OK", [Cmdid]};
-                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "No se pudo dejar de observar el juego", Reason]}
+                ok -> Pid ! {pcommand, "OK", [Cmdid, "LEA", {GameId, Node}]};
+                {error, Reason} -> Pid ! {pcommand, "ERR", [Cmdid, "LEA", {GameId, Node}, Reason]}
             end;
-        {_, [Cmdid | _]} ->
-            Pid ! {pcommand, "ERR", [Cmdid, "Comando inválido"]}
+        {CMD, [Cmdid | _]} ->
+            Pid ! {pcommand, "ERR", [Cmdid, CMD, "Comando inválido"]}
     end.
 
 getFreeNode() -> sendAndWait(pbalance, node).
@@ -275,7 +273,9 @@ acceptGame(User, {GameId, Node}) ->
             if Game#game.playerO == undefined ->
                 NewGame = Game#game{playerO = User, observers = sets:del_element(User, Game#game.observers)},
                 case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
-                    ok -> updateOponent(User, {GameId, Node}, NewGame, {accepted, User#user.name});
+                    ok ->
+                        updateOponent(User, {GameId, Node}, NewGame, {accepted, User#user.name}),
+                        {ok, NewGame#game.board};
                     {error, Reason} -> {error, Reason}
                 end;
             true -> {error, "La partida ya fue aceptada"}
@@ -292,7 +292,7 @@ makePlay(forfeit, User, GameCode = {GameId, Node}) ->
                         updateOponent(User, GameCode, Game, victory),
                         Response = {forfeit, User#user.name},
                         updateObservers(GameCode, Game, Response),
-                        {ok, "Te rendiste"};
+                        {ok, defeat};
                     {error, Reason} -> {error, Reason}
                 end;
             true -> error
@@ -312,7 +312,7 @@ makePlay(Play, User, GameCode = {GameId, Node}) ->
                             ok ->
                                 updateOponent(User, GameCode, Game, {defeat, NewBoard}),
                                 updateObservers(GameCode, Game, {ended, User#user.name, NewBoard}),
-                                {ok, "Ganaste"};
+                                {ok, {victory, NewBoard}};
                             {error, Reason} -> {error, Reason}
                         end;
                     IsTie ->
@@ -320,7 +320,7 @@ makePlay(Play, User, GameCode = {GameId, Node}) ->
                             ok ->
                                 updateOponent(User, GameCode, Game, {tie, NewBoard}),
                                 updateObservers(GameCode, Game, {ended, none, NewBoard}),
-                                {ok, "Empataste"};
+                                {ok, {tie, NewBoard}};
                             {error, Reason} -> {error, Reason}
                         end;
                     true ->
@@ -353,7 +353,6 @@ observeGame(User, {GameId, Node}) ->
             end;
         {error, Reason} -> {error, Reason}
     end.
-
 
 leaveGame(User, {GameId, Node}) ->
     case getGame(GameId, Node) of
@@ -427,16 +426,6 @@ isWinner({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}, Turn) ->
 isTie({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
     Symbols = [P11, P12, P13, P21, P22, P23, P31, P32, P33],
     lists:all(fun (Symbol) -> Symbol /= e end, Symbols).
-
-% blabla({X, Y}, {{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
-%     if
-%     (getSymbol(X, 1, Board) == getSymbol(X, 2, Board)) and (getSymbol(X, 2, Board) == getSymbol(X, 3, Board)) ->
-%         true;
-%     (getSymbol(1, Y, Board) == getSymbol(2, Y, Board)) and (getSymbol(2, Y, Board) == getSymbol(3, Y, Board)) ->
-%         true;
-%     Y == X and (getSymbol(1, 1, Board) == getSymbol(2, 2, Board)) and (getSymbol(2, 2, Board) == getSymbol(3, 3, Board)) -> true;
-%     Y == 4-X and (getSymbol(3, 1, Board) == getSymbol(2, 2, Board)) and (getSymbol(2, 2, Board) == getSymbol(1, 3, Board)) -> true
-%     end.
 
 updateOponent(User, GameCode, Game, Message) ->
     if (User == Game#game.playerX) ->
