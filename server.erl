@@ -215,7 +215,7 @@ pusersEndGame(Game, GameCode) ->
         {pusers, Observer#user.node} ! {removeObserving, Observer#user.name, GameCode}
     end, sets:to_list(Game#game.observers)),
     PlayerX = Game#game.playerX,
-    PlayerO = Game#game.playerX,
+    PlayerO = Game#game.playerO,
     {pusers, PlayerX#user.node} ! {removePlaying, PlayerX#user.name, GameCode},
     if PlayerO /= undefined ->
         {pusers, PlayerO#user.node} ! {removePlaying, PlayerO#user.name, GameCode};
@@ -473,10 +473,10 @@ bye(User) ->
     case Result of
         {ok, {Playing, Observing}} ->
             lists:foreach(fun (GameCode) ->
-                spawn(?MODULE, makePlay, [forfeit, User, GameCode])
+                makePlay(forfeit, User, GameCode)
             end, sets:to_list(Playing)),
             lists:foreach(fun (GameCode) ->
-                spawn(?MODULE, leaveGame, [User, GameCode])
+                leaveGame(User, GameCode)
             end, sets:to_list(Observing)),
             removeUser(User#user.name);
         {error, _} -> ok
