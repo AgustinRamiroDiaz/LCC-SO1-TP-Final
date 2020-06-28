@@ -1,5 +1,5 @@
 -module(server).
--export([start/0, dispatcher/1, psocket/1, pbalance/2, pstat/0, pcommand/3, pusers/3, pgames/2]).
+-export([start/0, dispatcher/1, psocket/1, psocketCommands/0, pbalance/2, pstat/0, pcommand/2, pusers/3, pgames/2, presponder/0]).
 -export([leaveGame/2, makePlay/3]).
 
 -define(DefaultPort, 6000).
@@ -17,6 +17,8 @@ start() ->
     register(pstat, spawn(?MODULE, pstat, [])),
     register(pusers, spawn(?MODULE, pusers, [sets:new(), maps:new(), maps:new()])),
     register(pgames, spawn(?MODULE, pgames, [maps:new(), 0])),
+    register(psocketCommands, spawn(?MODULE, psocketCommands, [])),
+    register(presponder, spawn(?MODULE, presponder, [])),
     started.
 
 listen() ->
@@ -82,10 +84,7 @@ psocket(User = #user{name = undefined}) ->
             gen_tcp:close(User#user.socket)
     end;
 psocket(User) ->
-    receive {pcommand, StatusPCommand, ArgsPCommand} ->
-        respond(User, StatusPCommand, ArgsPCommand)
-    after 0 -> ok end,
-    Result = gen_tcp:recv(User#user.socket, 0, 0),
+    Result = gen_tcp:recv(User#user.socket, 0),
     case Result of
         {ok, Packet} ->
             case binary_to_term(Packet) of
@@ -96,7 +95,7 @@ psocket(User) ->
                     bye(User),
                     respond(User, 'OK', [Cmdid]);
                 Command = {_, [_ | _]} ->
-                    case runCommand(User, Command, self()) of
+                    case runCommand(User, Command) of
                         {'ERR', Args} -> respond(User, 'ERR', Args);
                         _ -> ok
                     end,
@@ -112,17 +111,31 @@ psocket(User) ->
             bye(User)
     end.
 
-runCommand(User, Command = {CMD, [Cmdid | _]}, Pid) ->
+psocketCommands() ->
+    receive {pcommand, User, Status, Args} ->
+        respond(User, Status, Args)
+    end,
+    psocketCommands().
+
+runCommand(User, Command = {CMD, [Cmdid | _]}) ->
     case getFreeNode() of
         {ok, Node} ->
-            spawn(Node, ?MODULE, pcommand, [User, Command, Pid]);
+            spawn(Node, ?MODULE, pcommand, [User, Command]);
         {error, Reason} ->
            {'ERR', [Cmdid, CMD, Reason]}
     end.
 
 respond(User, Status, Args) ->
-    Socket = User#user.socket,
-    gen_tcp:send(Socket, term_to_binary({Status, Args})).
+    Node = User#user.node,
+    {presponder, Node} ! {respond, User, {Status, Args}}.
+
+presponder() ->
+    receive
+        {respond, User, {Status, Args}} ->
+            Socket = User#user.socket,
+            gen_tcp:send(Socket, term_to_binary({Status, Args}))
+    end,
+    presponder().
 
 pbalance(Loads, LastCheck) ->
     CurrentTime = getCurrentTime(),
@@ -209,36 +222,36 @@ pusersEndGame(Game, GameCode) ->
     true -> ok
     end.
 
-pcommand(User, Command, Pid) ->
+pcommand(User, Command) ->
     case Command of
-        {'LSG', [Cmdid]} -> Pid ! {pcommand, 'OK', [Cmdid, 'LSG', getAllGames()]};
+        {'LSG', [Cmdid]} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'LSG', getAllGames()]};
         {'NEW', [Cmdid]} ->
             case addGame(User) of
-                {ok, GameId} -> Pid ! {pcommand, 'OK', [Cmdid, 'NEW', {GameId, node()}]};
-                {error, Reason} -> Pid ! {pcommand, 'ERR', [Cmdid, 'NEW', Reason]}
+                {ok, GameId} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'NEW', {GameId, node()}]};
+                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'NEW', Reason]}
             end;
         {'ACC', [Cmdid, {GameId, Node}]} ->
             case acceptGame(User, {GameId, Node}) of
-                {ok, Board} -> Pid ! {pcommand, 'OK', [Cmdid, 'ACC', {GameId, Node}, Board]};
-                {error, Reason} -> Pid ! {pcommand, 'ERR', [Cmdid, 'ACC', {GameId, Node}, Reason]}
+                {ok, Board} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'ACC', {GameId, Node}, Board]};
+                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'ACC', {GameId, Node}, Reason]}
             end;
         {'PLA', [Cmdid, {GameId, Node}, Play]} ->
             case makePlay(Play, User, {GameId, Node}) of
-                {ok, Update} -> Pid ! {pcommand, 'OK', [Cmdid, 'PLA', {GameId, Node}, Update]};
-                {error, Reason} -> Pid ! {pcommand, 'ERR', [Cmdid, 'PLA', {GameId, Node}, Reason]}
+                {ok, Update} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'PLA', {GameId, Node}, Update]};
+                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'PLA', {GameId, Node}, Reason]}
             end;
         {'OBS', [Cmdid, {GameId, Node}]} ->
             case observeGame(User, {GameId, Node}) of
-                {ok, Board} -> Pid ! {pcommand, 'OK', [Cmdid, 'OBS', {GameId, Node}, Board]};
-                {error, Reason} -> Pid ! {pcommand, 'ERR', [Cmdid, 'OBS', {GameId, Node}, Reason]}
+                {ok, Board} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'OBS', {GameId, Node}, Board]};
+                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'OBS', {GameId, Node}, Reason]}
             end;
         {'LEA', [Cmdid, {GameId, Node}]} ->
             case leaveGame(User, {GameId, Node}) of
-                ok -> Pid ! {pcommand, 'OK', [Cmdid, 'LEA', {GameId, Node}]};
-                {error, Reason} -> Pid ! {pcommand, 'ERR', [Cmdid, 'LEA', {GameId, Node}, Reason]}
+                ok -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'LEA', {GameId, Node}]};
+                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'LEA', {GameId, Node}, Reason]}
             end;
         {CMD, [Cmdid | _]} ->
-            Pid ! {pcommand, 'ERR', [Cmdid, CMD, "Comando inválido"]}
+            psocketCommands ! {pcommand, User, 'ERR', [Cmdid, CMD, "Comando inválido"]}
     end.
 
 getFreeNode() -> sendAndWait(pbalance, node).
@@ -332,7 +345,7 @@ addGame(User) ->
         {error, Reason} -> {error, Reason}
     end.
 
-acceptGame(User, {GameId, Node}) ->
+acceptGame(User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
             if User == Game#game.playerX ->
@@ -342,8 +355,8 @@ acceptGame(User, {GameId, Node}) ->
                     NewGame = Game#game{playerO = User, observers = sets:del_element(User, Game#game.observers)},
                     case sendAndWait({pgames, Node}, {update, GameId, NewGame}) of
                         ok ->
-                            updateOponent(User, {GameId, Node}, NewGame, {accepted, User#user.name}),
-                            {pusers, User#user.node} ! {addPlaying, User#user.name, {GameId, Node}},
+                            updateOponent(User, GameCode, NewGame, {accepted, User#user.name}),
+                            {pusers, User#user.node} ! {addPlaying, User#user.name, GameCode},
                             {ok, NewGame#game.board};
                         {error, Reason} -> {error, Reason}
                     end;
@@ -537,8 +550,7 @@ updateOponent(User, GameCode, Game, Message) ->
     end,
     if Oponent /= undefined ->
         updateUser(Oponent, GameCode, Game, Message);
-    true ->
-        error
+    true -> error
     end.
 
 updateObservers(GameCode, Game, Message) ->
