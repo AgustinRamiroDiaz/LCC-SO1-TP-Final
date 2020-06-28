@@ -19,11 +19,11 @@ input(Socket, NextCommandId) ->
                         io:format("Comando ~p enviado~n~n", [NextCommandId]),
                         input(Socket, NextCommandId + 1);
                     error ->
-                        io:format("Argumentos inválidos~n"),
+                        io:format("Argumentos inválidos~n~n"),
                         input(Socket, NextCommandId)
                 end;
             _ ->
-                io:format("Ingrese un comando válido~n"),
+                io:format("Ingrese un comando válido~n~n"),
                 input(Socket, NextCommandId)
         end
     end.
@@ -44,7 +44,7 @@ getArguments(CMD, ListOfArgs) ->
             _ -> Args = ListOfArgs
         end,
         {ok, Args}
-    catch _ -> error end.
+    catch _:_ -> error end.
 
 output(Socket) ->
     Result = gen_tcp:recv(Socket, 0),

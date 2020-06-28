@@ -1,5 +1,5 @@
 -module(server).
--export([start/0, dispatcher/1, psocket/1, pbalance/1, pstat/0, pcommand/3, pnames/1, pgames/2]).
+-export([start/0, dispatcher/1, psocket/1, pbalance/2, pstat/0, pcommand/3, pnames/1, pgames/2]).
 -export([leaveGame/2, makePlay/3]).
 
 -define(DefaultPort, 6000).
@@ -13,7 +13,7 @@
 start() ->
     LSocket = listen(),
     register(dispatcher, spawn(?MODULE, dispatcher, [LSocket])),
-    register(pbalance, spawn(?MODULE, pbalance, [maps:new()])),
+    register(pbalance, spawn(?MODULE, pbalance, [maps:new(), getCurrentTime()])),
     register(pstat, spawn(?MODULE, pstat, [])),
     register(pnames, spawn(?MODULE, pnames, [sets:new()])),
     register(pgames, spawn(?MODULE, pgames, [maps:new(), 0])),
@@ -67,6 +67,9 @@ psocket(User = #user{name = undefined}) ->
                             respond(User, 'ERR', [Cmdid, 'CON', Reason]),
                             psocket(User)
                     end;
+                {'CON', [Cmdid | _]} ->
+                    respond(User, 'ERR', [Cmdid, 'CON', "Argumentos inválidos"]),
+                    psocket(User);
                 {CMD, [Cmdid | _]} ->
                     respond(User, 'ERR', [Cmdid, CMD, "No se encuentra registrado"]),
                     psocket(User);
@@ -121,21 +124,27 @@ respond(User, Status, Args) ->
     Socket = User#user.socket,
     gen_tcp:send(Socket, term_to_binary({Status, Args})).
 
-pbalance(Loads) ->
-    CurrentTime = erlang:system_time(millisecond),
-    FilteredLoads = maps:filter(fun (_, {_, Time}) ->
-        (CurrentTime - Time) =< (2 * ?StatsFrequency)
-    end, Loads),
+pbalance(Loads, LastCheck) ->
+    CurrentTime = getCurrentTime(),
+    if (CurrentTime - LastCheck) >= ?StatsFrequency ->
+        FilteredLoads = maps:filter(fun (_, {_, Time}) ->
+            (CurrentTime - Time) =< (2 * ?StatsFrequency)
+        end, Loads),
+        NewLastCheck = CurrentTime;
+    true ->
+        FilteredLoads = Loads,
+        NewLastCheck = LastCheck
+    end,
     receive
         {load, Node, Load} ->
-            NewLoads = maps:put(Node, {Load, erlang:system_time(millisecond)}, FilteredLoads),
-            pbalance(NewLoads);
+            NewLoads = maps:put(Node, {Load, getCurrentTime()}, FilteredLoads),
+            pbalance(NewLoads, NewLastCheck);
         {node, Pid} ->
             Result = getFreeNode(FilteredLoads),
             Pid ! Result,
-            pbalance(FilteredLoads)
+            pbalance(FilteredLoads, NewLastCheck)
     after ?StatsFrequency ->
-        pbalance(FilteredLoads)
+        pbalance(FilteredLoads, NewLastCheck)
     end.
 
 pstat() ->
@@ -195,17 +204,21 @@ pcommand(User, Command, Pid) ->
     end.
 
 getFreeNode() -> sendAndWait(pbalance, node).
-getFreeNode([]) -> {error, "No se encontró ningún nodo disponible"};
 getFreeNode(Loads) ->
-    ChooseNode = fun (Node, Load, BestNode) ->
-        if (BestNode == undefined) -> Node;
-        true ->
-            BestLoad = maps:get(BestNode, Loads),
-            min(Load, BestLoad)
+    ChooseNode = fun (Node, {Load, _}, PreviousBest) ->
+        case PreviousBest of
+            {undefined, undefined} -> {Node, Load};
+            {PreviousNode, PreviousLoad} ->
+                if PreviousLoad =< Load -> {PreviousNode, PreviousLoad};
+                true -> {Node, Load}
+                end
         end
     end,
-    Node = maps:fold(ChooseNode, undefined, Loads),
-    {ok, Node}.
+    Result = maps:fold(ChooseNode, {undefined, undefined}, Loads),
+    case Result of
+        {undefined, undefined} -> {error, "No se encontró ningún nodo disponible"};
+        {Node, _} -> {ok, Node}
+    end.
 
 getAllNodes() -> [node() | nodes()].
 
@@ -358,11 +371,15 @@ observeGame(User, {GameId, Node}) ->
             if IsPlaying ->
                 {error, "Los jugadores no pueden observar sus propias partidas"};
             true ->
-                NewGame = Game#game{observers = sets:add_element(User, Game#game.observers)},
-                Result = sendAndWait({pgames, Node}, {update, GameId, NewGame}),
-                case Result of
-                    ok -> {ok, NewGame#game.board};
-                    {error, Reason} -> {error, Reason}
+                IsObserving = sets:is_element(User, Game#game.observers),
+                if IsObserving -> {error, "Ya estás observando esta partida"};
+                true ->
+                    NewGame = Game#game{observers = sets:add_element(User, Game#game.observers)},
+                    Result = sendAndWait({pgames, Node}, {update, GameId, NewGame}),
+                    case Result of
+                        ok -> {ok, NewGame#game.board};
+                        {error, Reason} -> {error, Reason}
+                    end
                 end
             end;
         {error, Reason} -> {error, Reason}
@@ -371,8 +388,12 @@ observeGame(User, {GameId, Node}) ->
 leaveGame(User, {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
-            NewGame = Game#game{observers = sets:del_element(User, Game#game.observers)},
-            sendAndWait({pgames, Node}, {update, GameId, NewGame});
+            IsObserving = sets:is_element(User, Game#game.observers),
+            if IsObserving ->
+                NewGame = Game#game{observers = sets:del_element(User, Game#game.observers)},
+                sendAndWait({pgames, Node}, {update, GameId, NewGame});
+            true -> {error, "No estás observando esta partida"}
+            end;
         {error, Reason} -> {error, Reason}
     end.
 
@@ -467,3 +488,5 @@ updateObservers(GameCode, Game, Message) ->
 
 updateUser(User, GameCode, Game, Message) ->
     respond(User, 'UPD', [GameCode, getGameTitle(Game), Message]).
+
+getCurrentTime() -> erlang:system_time(millisecond).
