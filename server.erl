@@ -2,13 +2,8 @@
 -export([start/0, dispatcher/1, psocket/1, psocketCommands/0, pbalance/2, pstat/0, pcommand/2, pusers/3, pgames/2, presponder/0]).
 -export([leaveGame/2, makePlay/3]).
 
--define(DefaultPort, 6000).
--define(EmptyBoard, {{e, e, e}, {e, e, e}, {e, e, e}}).
--define(StatsFrequency, 500).
--define(QueryWaitTime, 1000).
-
--record(user, {socket, name, node}).
--record(game, {board, playerX, playerO, turn, observers}).
+-include("header.hrl").
+-include("serverheader.hrl").
 
 start() ->
     LSocket = listen(),
@@ -60,27 +55,30 @@ psocket(User = #user{name = undefined}) ->
     case Result of
         {ok, Packet} ->
             case binary_to_term(Packet) of
-                {'CON', [Cmdid, NewName]} ->
+                #command{cmd = 'CON', cmdid = Cmdid, args = [NewName]} ->
                     case addUser(NewName) of
                         ok ->
-                            respond(User, 'OK', [Cmdid, 'CON']),
+                            respond(User, #result{status = 'OK', cmdid = Cmdid, args = ['CON']}),
                             psocket(User#user{name = NewName});
                         {error, Reason} ->
-                            respond(User, 'ERR', [Cmdid, 'CON', Reason]),
+                            respond(User, #result{status = 'ERR', cmdid = Cmdid, args = ['CON', Reason]}),
                             psocket(User)
                     end;
-                {'CON', [Cmdid | _]} ->
-                    respond(User, 'ERR', [Cmdid, 'CON', "Argumentos inválidos"]),
+                #command{cmd = 'CON', cmdid = Cmdid} ->
+                    respond(User, #result{status = 'ERR', cmdid = Cmdid, args = ['CON', "Argumentos inválidos"]}),
                     psocket(User);
-                {CMD, [Cmdid | _]} ->
-                    respond(User, 'ERR', [Cmdid, CMD, "No se encuentra registrado"]),
+                #command{cmd = 'BYE'} ->
+                    gen_tcp:close(User#user.socket),
+                    io:format("Un cliente anónimo se desconectó~n");
+                #command{cmd = CMD, cmdid = Cmdid} ->
+                    respond(User, #result{status = 'ERR', cmdid = Cmdid, args = [CMD, "No se encuentra registrado"]}),
                     psocket(User);
                 _ ->
-                    respond(User, 'ERR', ["Comando inválido"]),
+                    respond(User, #result{status = 'ERR', args = ["Comando inválido"]}),
                     psocket(User)
             end;
         {error, Reason} ->
-            io:format("El socket se cerró (~p)~n", [Reason]),
+            io:format("Se perdió la conexión con un cliente anónimo (~p)~n", [Reason]),
             gen_tcp:close(User#user.socket)
     end;
 psocket(User) ->
@@ -88,20 +86,20 @@ psocket(User) ->
     case Result of
         {ok, Packet} ->
             case binary_to_term(Packet) of
-                {'CON', [Cmdid, _]} ->
-                    respond(User, 'ERR', [Cmdid, 'CON', "Ya se encuentra registrado"]),
+                #command{cmd = 'CON', cmdid = Cmdid} ->
+                    respond(User, #result{status ='ERR', cmdid = Cmdid, args = ['CON', "Ya se encuentra registrado"]}),
                     psocket(User);
-                {'BYE', [Cmdid]} ->
+                #command{cmd = 'BYE'} ->
                     bye(User),
-                    respond(User, 'OK', ['BYE', Cmdid]);
-                Command = {_, [_ | _]} ->
+                    io:format("El cliente ~p se desconectó~n", [User#user.name]);
+                Command = #command{cmdid = Cmdid} ->
                     case runCommand(User, Command) of
-                        {'ERR', Args} -> respond(User, 'ERR', Args);
+                        {'ERR', Args} -> respond(User, #result{status = 'ERR', cmdid = Cmdid, args = Args});
                         _ -> ok
                     end,
                     psocket(User);
                 _ ->
-                    respond(User, 'ERR', ["Comando inválido"]),
+                    respond(User, #result{status = 'ERR', args = ["Comando inválido"]}),
                     psocket(User)
             end;
         {error, timeout} ->
@@ -112,12 +110,12 @@ psocket(User) ->
     end.
 
 psocketCommands() ->
-    receive {pcommand, User, Status, Args} ->
-        respond(User, Status, Args)
+    receive {pcommand, User, Result} ->
+        respond(User, Result)
     end,
     psocketCommands().
 
-runCommand(User, Command = {CMD, [Cmdid | _]}) ->
+runCommand(User, Command = #command{cmd = CMD, cmdid = Cmdid}) ->
     case getFreeNode() of
         {ok, Node} ->
             spawn(Node, ?MODULE, pcommand, [User, Command]);
@@ -125,15 +123,15 @@ runCommand(User, Command = {CMD, [Cmdid | _]}) ->
            {'ERR', [Cmdid, CMD, Reason]}
     end.
 
-respond(User, Status, Args) ->
+respond(User, Message) ->
     Node = User#user.node,
-    {presponder, Node} ! {respond, User, {Status, Args}}.
+    {presponder, Node} ! {respond, User, Message}.
 
 presponder() ->
     receive
-        {respond, User, {Status, Args}} ->
+        {respond, User, Message} ->
             Socket = User#user.socket,
-            gen_tcp:send(Socket, term_to_binary({Status, Args}))
+            gen_tcp:send(Socket, term_to_binary(Message))
     end,
     presponder().
 
@@ -224,34 +222,34 @@ pusersEndGame(Game, GameCode) ->
 
 pcommand(User, Command) ->
     case Command of
-        {'LSG', [Cmdid]} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'LSG', getAllGames()]};
-        {'NEW', [Cmdid]} ->
+        #command{cmd = 'LSG', cmdid = Cmdid} -> psocketCommands ! {pcommand, User, #result{status = 'OK', cmdid = Cmdid, args = ['LSG', getAllGames()]}};
+        #command{cmd = 'NEW', cmdid = Cmdid} ->
             case addGame(User) of
-                {ok, GameId} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'NEW', {GameId, node()}]};
-                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'NEW', Reason]}
+                {ok, GameId} -> psocketCommands ! {pcommand, User, #result{status = 'OK', cmdid = Cmdid, args = ['NEW', {GameId, node()}]}};
+                {error, Reason} -> psocketCommands ! {pcommand, User, #result{status = 'ERR', cmdid = Cmdid, args = ['NEW', Reason]}}
             end;
-        {'ACC', [Cmdid, {GameId, Node}]} ->
+        #command{cmd = 'ACC', cmdid = Cmdid, args = [{GameId, Node}]} ->
             case acceptGame(User, {GameId, Node}) of
-                {ok, Board} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'ACC', {GameId, Node}, Board]};
-                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'ACC', {GameId, Node}, Reason]}
+                {ok, Board} -> psocketCommands ! {pcommand, User, #result{status = 'OK', cmdid = Cmdid, args = ['ACC', {GameId, Node}, Board]}};
+                {error, Reason} -> psocketCommands ! {pcommand, User, #result{status = 'ERR', cmdid = Cmdid, args = ['ACC', {GameId, Node}, Reason]}}
             end;
-        {'PLA', [Cmdid, {GameId, Node}, Play]} ->
+        #command{cmd = 'PLA', cmdid = Cmdid, args = [{GameId, Node}, Play]} ->
             case makePlay(Play, User, {GameId, Node}) of
-                {ok, Update} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'PLA', {GameId, Node}, Update]};
-                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'PLA', {GameId, Node}, Reason]}
+                {ok, Update} -> psocketCommands ! {pcommand, User, #result{status = 'OK', cmdid = Cmdid, args = ['PLA', {GameId, Node}, Update]}};
+                {error, Reason} -> psocketCommands ! {pcommand, User, #result{status = 'ERR', cmdid = Cmdid, args = ['PLA', {GameId, Node}, Reason]}}
             end;
-        {'OBS', [Cmdid, {GameId, Node}]} ->
+        #command{cmd = 'OBS', cmdid = Cmdid, args = [{GameId, Node}]} ->
             case observeGame(User, {GameId, Node}) of
-                {ok, Board} -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'OBS', {GameId, Node}, Board]};
-                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'OBS', {GameId, Node}, Reason]}
+                {ok, Board} -> psocketCommands ! {pcommand, User, #result{status = 'OK', cmdid = Cmdid, args = ['OBS', {GameId, Node}, Board]}};
+                {error, Reason} -> psocketCommands ! {pcommand, User, #result{status = 'ERR', cmdid = Cmdid, args = ['OBS', {GameId, Node}, Reason]}}
             end;
-        {'LEA', [Cmdid, {GameId, Node}]} ->
+        #command{cmd = 'LEA', cmdid = Cmdid, args = [{GameId, Node}]} ->
             case leaveGame(User, {GameId, Node}) of
-                ok -> psocketCommands ! {pcommand, User, 'OK', [Cmdid, 'LEA', {GameId, Node}]};
-                {error, Reason} -> psocketCommands ! {pcommand, User, 'ERR', [Cmdid, 'LEA', {GameId, Node}, Reason]}
+                ok -> psocketCommands ! {pcommand, User, #result{status = 'OK', cmdid = Cmdid, args = ['LEA', {GameId, Node}]}};
+                {error, Reason} -> psocketCommands ! {pcommand, User, #result{status = 'ERR', cmdid = Cmdid, args = ['LEA', {GameId, Node}, Reason]}}
             end;
-        {CMD, [Cmdid | _]} ->
-            psocketCommands ! {pcommand, User, 'ERR', [Cmdid, CMD, "Comando inválido"]}
+        #command{cmd = CMD, cmdid = Cmdid} ->
+            psocketCommands ! {pcommand, User, #result{status = 'ERR', cmdid = Cmdid, args = [CMD, "Comando inválido"]}}
     end.
 
 getFreeNode() -> sendAndWait(pbalance, node).
@@ -384,7 +382,7 @@ makePlay(forfeit, User, GameCode = {GameId, Node}) ->
             end;
         {error, Reason} -> {error, Reason}
     end;
-makePlay(Play, User, GameCode = {GameId, Node}) ->
+makePlay(Play = {_, _}, User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
             case makePlayOnBoard(Play, Game, User) of
@@ -423,7 +421,8 @@ makePlay(Play, User, GameCode = {GameId, Node}) ->
                 {error, Reason} -> {error, Reason}
             end;
         {error, Reason} -> {error, Reason}
-    end.
+    end;
+    makePlay(_, _, _) -> {error, "Jugada inválida"}.
 
 observeGame(User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
@@ -559,6 +558,6 @@ updateObservers(GameCode, Game, Message) ->
     lists:foreach(UpdateObserver, Observers).
 
 updateUser(User, GameCode, Game, Message) ->
-    respond(User, 'UPD', [GameCode, getGameTitle(Game), Message]).
+    respond(User, #update{args = [GameCode, getGameTitle(Game), Message]}).
 
 getCurrentTime() -> erlang:system_time(millisecond).

@@ -1,31 +1,29 @@
 -module(client).
+-include("header.hrl").
 -export([start/0, input/2, output/1]).
 
 input(Socket, NextCommandId) ->
-    receive {'DOWN', Ref, process, _, _} ->
-        erlang:demonitor(Ref)
-    after 0 ->
-        Input = io:get_line("Ingrese un comando: "),
-        Command = string:split(string:trim(Input), " ", all),
-        case Command of
-            ["BYE"] ->
-                gen_tcp:send(Socket, term_to_binary({'BYE', [NextCommandId]})),
-                gen_tcp:close(Socket);
-            [CommandString | ListOfArgs] ->
-                CMD = list_to_atom(CommandString),
-                case getArguments(CMD, ListOfArgs) of
-                    {ok, Args} ->
-                        gen_tcp:send(Socket, term_to_binary({CMD, [NextCommandId | Args]})),
-                        io:format("Comando ~p enviado~n~n", [NextCommandId]),
-                        input(Socket, NextCommandId + 1);
-                    error ->
-                        io:format("Argumentos inválidos~n~n"),
-                        input(Socket, NextCommandId)
-                end;
-            _ ->
-                io:format("Ingrese un comando válido~n~n"),
-                input(Socket, NextCommandId)
-        end
+    Input = io:get_line("Ingrese un comando: "),
+    Command = string:split(string:trim(Input), " ", all),
+    case Command of
+        ["BYE"] ->
+            gen_tcp:send(Socket, term_to_binary(#command{cmd = 'BYE', cmdid = NextCommandId, args = []})),
+            gen_tcp:close(Socket),
+            okmickeymouse;
+        [CommandString | ListOfArgs] ->
+            CMD = list_to_atom(CommandString),
+            case getArguments(CMD, ListOfArgs) of
+                {ok, Args} ->
+                    gen_tcp:send(Socket, term_to_binary(#command{cmd = CMD, cmdid = NextCommandId, args = Args})),
+                    io:format("Comando ~p enviado~n~n", [NextCommandId]),
+                    input(Socket, NextCommandId + 1);
+                error ->
+                    io:format("Argumentos inválidos~n~n"),
+                    input(Socket, NextCommandId)
+            end;
+        _ ->
+            io:format("Ingrese un comando válido~n~n"),
+            input(Socket, NextCommandId)
     end.
 
 
@@ -33,19 +31,21 @@ getArguments(CMD, ListOfArgs) ->
     GetGameCode = fun (GameId, Node) -> {list_to_integer(GameId), list_to_atom(Node)} end,
     try
         case {CMD, ListOfArgs} of
+            {'CON', [Name]} -> {ok, [Name]};
+            {'LSG', []} -> {ok, []};
+            {'NEW', []} -> {ok, []};
             {'ACC', [GameId, Node]} ->
-                Args = [GetGameCode(GameId, Node)];
+                {ok, [GetGameCode(GameId, Node)]};
             {'PLA', [GameId, Node, Play]} ->
-                Args = [GetGameCode(GameId, Node), list_to_atom(Play)];
+                {ok, [GetGameCode(GameId, Node), list_to_atom(Play)]};
             {'PLA', [GameId, Node, X, Y]} ->
-                Args = [GetGameCode(GameId, Node), {list_to_integer(X), list_to_integer(Y)}];
+                {ok, [GetGameCode(GameId, Node), {list_to_integer(X), list_to_integer(Y)}]};
             {'OBS', [GameId, Node]} ->
-                Args = [GetGameCode(GameId, Node)];
+                {ok ,[GetGameCode(GameId, Node)]};
             {'LEA', [GameId, Node]} ->
-                Args = [GetGameCode(GameId, Node)];
-            _ -> Args = ListOfArgs
-        end,
-        {ok, Args}
+                {ok, [GetGameCode(GameId, Node)]};
+            _ -> error
+        end
     catch _:_ -> error end.
 
 output(Socket) ->
@@ -53,47 +53,44 @@ output(Socket) ->
     case Result of
         {ok, Packet} ->
             case binary_to_term(Packet) of
-                {'UPD', [{GameId, Node}, GameTitle, {board, Board}]} ->
+                #update{args = [{GameId, Node}, GameTitle, {board, Board}]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     showBoard(Board);
-                %% Caso jugadores
-                {'UPD', [{GameId, Node}, GameTitle, {defeat, Board}]} ->
+                #update{args = [{GameId, Node}, GameTitle, {defeat, Board}]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     io:format("Perdiste!~n"),
                     showBoard(Board);
-                {'UPD', [{GameId, Node}, GameTitle, {tie, Board}]} ->
+                #update{args = [{GameId, Node}, GameTitle, {tie, Board}]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     io:format("Empataste!~n"),
                     showBoard(Board);
-                {'UPD', [{GameId, Node}, GameTitle, victory]} ->
+                #update{args = [{GameId, Node}, GameTitle, victory]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     io:format("Tu oponente se rindió!~n~n");
-                {'UPD', [{GameId, Node}, GameTitle, {accepted, Username}]} ->
+                #update{args = [{GameId, Node}, GameTitle, {accepted, Username}]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     io:format("El usuario ~p aceptó la partida~n~n", [Username]);
-                %% Caso observadores
-                {'UPD', [{GameId, Node}, GameTitle, {ended, none, Board}]} ->
+                #update{args = [{GameId, Node}, GameTitle, {ended, none, Board}]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     io:format("Empataron~n~n"),
                     showBoard(Board);
-                {'UPD', [{GameId, Node}, GameTitle, {ended, Username, Board}]} ->
+                #update{args = [{GameId, Node}, GameTitle, {ended, Username, Board}]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     io:format("El usuario ~p ganó~n~n", [Username]),
                     showBoard(Board);
-                {'UPD', [{GameId, Node}, GameTitle, {forfeit, Username}]} ->
+                #update{args = [{GameId, Node}, GameTitle, {forfeit, Username}]} ->
                     io:format("Partida ~p en el nodo ~p - ~p:~n", [GameId, Node, GameTitle]),
                     io:format("El usuario ~p se rindió~n~n", [Username]);
-                %% Respuestas a comandos
-                {'OK', [Cmdid, 'CON']} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['CON']} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Te conectaste correctamente~n~n");
-                {'ERR', [Cmdid, 'CON', Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = ['CON', Reason]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Error al conectarte (~p)~n~n", [Reason]);
-                {'OK', [Cmdid, 'LSG', []]} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['LSG', []]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("No hay partidas disponibles~n~n");
-                {'OK', [Cmdid, 'LSG', Games]} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['LSG', Games]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Partidas disponibles:~n"),
                     PrintGame = fun ({{GameId, Node}, Title}) ->
@@ -101,23 +98,23 @@ output(Socket) ->
                     end,
                     lists:foreach(PrintGame, Games),
                     io:format("~n");
-                {'ERR', [Cmdid, 'LSG', Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = ['LSG', Reason]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("No se pudo obtener la lista de partidas (~p)~n~n", [Reason]);
-                {'OK', [Cmdid, 'NEW', {GameId, Node}]} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['NEW', {GameId, Node}]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Partida ~p creada en el nodo ~p~n~n", [GameId, Node]);
-                {'ERR', [Cmdid, 'NEW', Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = ['NEW', Reason]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("No se pudo crear la partida (~p)~n~n", [Reason]);
-                {'OK', [Cmdid, 'ACC', {GameId, Node}, Board]} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['ACC', {GameId, Node}, Board]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Aceptaste la partida ~p en el nodo ~p~n", [GameId, Node]),
                     showBoard(Board);
-                {'ERR', [Cmdid, 'ACC', {GameId, Node}, Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = ['ACC', {GameId, Node}, Reason]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("No se pudo aceptar la partida ~p en el nodo ~p (~p)~n~n", [GameId, Node, Reason]);
-                {'OK', [Cmdid, 'PLA', {GameId, Node}, Update]} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['PLA', {GameId, Node}, Update]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     case Update of
                         {victory, Board} ->
@@ -131,23 +128,23 @@ output(Socket) ->
                             io:format("Jugada realizada en la partida ~p en el nodo ~p~n", [GameId, Node]),
                             showBoard(Board)
                     end;
-                {'ERR', [Cmdid, 'PLA', {GameId, Node}, Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = ['PLA', {GameId, Node}, Reason]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("No se pudo realizar la jugada en la partida ~p en el nodo ~p (~p)~n~n", [GameId, Node, Reason]);
-                {'OK', [Cmdid, 'OBS', {GameId, Node}, Board]} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['OBS', {GameId, Node}, Board]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Observando la partida ~p en el nodo ~p~n", [GameId, Node]),
                     showBoard(Board);
-                {'ERR', [Cmdid, 'OBS', {GameId, Node}, Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = ['OBS', {GameId, Node}, Reason]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("No se pudo observar la partida ~p en el nodo ~p (~p)~n~n", [GameId, Node, Reason]);
-                {'OK', [Cmdid, 'LEA', {GameId, Node}]} ->
+                #result{status = 'OK', cmdid = Cmdid, args = ['LEA', {GameId, Node}]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("Dejaste de observar la partida ~p en el nodo ~p~n~n", [GameId, Node]);
-                {'ERR', [Cmdid, 'LEA', {GameId, Node}, Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = ['LEA', {GameId, Node}, Reason]} ->
                     io:format("Comando ~p~n", [Cmdid]),
                     io:format("No se pudo dejar de observar la partida ~p en el nodo ~p (~p)~n~n", [GameId, Node, Reason]);
-                {'ERR', [Cmdid, CMD, Reason]} ->
+                #result{status = 'ERR', cmdid = Cmdid, args = [CMD, Reason]} ->
                     io:format("No se pudo ejecutar el comando ~p (~p): ~p~n~n", [Cmdid, CMD, Reason]);
                 {'ERR', [Reason]} ->
                     io:format("Ocurrió un error (~p)~n~n", [Reason]);
@@ -156,7 +153,9 @@ output(Socket) ->
             end,
             output(Socket);
         {error, closed} ->
-            io:format("Se cerró la conexión~n~n");
+            gen_tcp:close(Socket),
+            io:format("Se cerró la conexión~n~n"),
+            exit(closed);
         {error, Reason} ->
             io:format("No se pudo leer un paquete del servidor (~p)~n~n", [Reason]),
             output(Socket)
@@ -170,7 +169,7 @@ start() ->
             case Result of
                 {ok, Socket} ->
                     io:format("Conexión establecida con el servidor~n~n"),
-                    erlang:monitor(process, spawn(?MODULE, output, [Socket])),
+                    spawn_link(?MODULE, output, [Socket]),
                     input(Socket, 0);
                 {error, Reason} ->
                     io:format("No se pudo establecer la conexión con el servidor (~p)~n~n", [Reason]),
