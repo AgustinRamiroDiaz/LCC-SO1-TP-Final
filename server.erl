@@ -160,7 +160,8 @@ pbalance(Loads, LastCheck) ->
 
 pstat() ->
     Load = erlang:statistics(run_queue),
-    lists:foreach(fun (Node) -> {pbalance, Node} ! {load, Node, Load} end, getAllNodes()),
+    CurrentNode = node(),
+    lists:foreach(fun (Node) -> {pbalance, Node} ! {load, CurrentNode, Load} end, getAllNodes()),
     timer:sleep(?StatsFrequency),
     pstat().
 
