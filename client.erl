@@ -3,6 +3,7 @@
 
 -include("common.hrl").
 
+%%%%%%%%%%%%%%%%%%% Input
 input(Socket, NextCommandId) ->
     Input = io:get_line("Ingrese un comando: "),
     Command = string:split(string:trim(Input), " ", all),
@@ -47,7 +48,10 @@ getArguments(CMD, ListOfArgs) ->
             _ -> error
         end
     catch _:_ -> error end.
+%%%%%%%%%%%%%%%%%%%
 
+
+%%%%%%%%%%%%%%%%%%% Output
 output(Socket) ->
     Result = gen_tcp:recv(Socket, 0),
     case Result of
@@ -151,6 +155,17 @@ output(Socket) ->
             output(Socket)
     end.
 
+
+showBoard({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
+    io:format(
+        " ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n~n",
+        [P11, P21, P31, P12, P22, P32, P13, P23, P33]
+    ).
+
+%%%%%%%%%%%%%%%%%%%
+
+
+%%%%%%%%%%%%%%%%%%% Start
 start() ->
     Input = io:get_line("Ingrese la dirección del servidor: "),
     case getServerAddress(Input) of
@@ -177,9 +192,4 @@ getServerAddress(Input) ->
         {ok, Address, Port}
     catch _:_ -> error
     end.
-
-showBoard({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
-    io:format(
-        " ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n~n",
-        [P11, P21, P31, P12, P22, P32, P13, P23, P33]
-    ).
+%%%%%%%%%%%%%%%%%%%

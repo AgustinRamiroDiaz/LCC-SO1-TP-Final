@@ -5,7 +5,6 @@
 -include("server.hrl").
 
 %%%%%%%%%%%%%%%%%%% Core
-
 start() ->
     LSocket = listen(),
     register(dispatcher, spawn(?MODULE, dispatcher, [LSocket])),
