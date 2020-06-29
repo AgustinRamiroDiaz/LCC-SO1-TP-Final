@@ -4,6 +4,8 @@
 -include("common.hrl").
 
 %%%%%%%%%%%%%%%%%%% Input
+
+% Recibe la entrada del usuario y envía al servidor el comando ingresado
 input(Socket, NextCommandId) ->
     Input = io:get_line("Ingrese un comando: "),
     Command = string:split(string:trim(Input), " ", all),
@@ -28,6 +30,7 @@ input(Socket, NextCommandId) ->
             input(Socket, NextCommandId)
     end.
 
+% Devuelve la lista de argumentos a utilizar por el comando
 getArguments(CMD, ListOfArgs) ->
     GetGameCode = fun (GameId, Node) -> {list_to_integer(GameId), list_to_atom(Node)} end,
     try
@@ -52,6 +55,8 @@ getArguments(CMD, ListOfArgs) ->
 
 
 %%%%%%%%%%%%%%%%%%% Output
+
+% Muestra de forma amigable los mensajes del servidor
 output(Socket) ->
     Result = gen_tcp:recv(Socket, 0),
     case Result of
@@ -155,7 +160,7 @@ output(Socket) ->
             output(Socket)
     end.
 
-
+% Muestra un tablero de forma amigable
 showBoard({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
     io:format(
         " ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n-----------~n ~p | ~p | ~p ~n~n",
@@ -165,7 +170,9 @@ showBoard({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
 %%%%%%%%%%%%%%%%%%%
 
 
-%%%%%%%%%%%%%%%%%%% Start
+%%%%%%%%%%%%%%%%%%% Core
+
+% Inicializa el cliente e intenta conectarse con el servidor
 start() ->
     Input = io:get_line("Ingrese la dirección del servidor: "),
     case getServerAddress(Input) of
@@ -185,6 +192,7 @@ start() ->
             start()
     end.
 
+% Recibe la entrada del usuario y valida si es una dirección válida
 getServerAddress(Input) ->
     try
         [Address, InputPort] = string:split(string:trim(Input), ":"),
@@ -192,4 +200,5 @@ getServerAddress(Input) ->
         {ok, Address, Port}
     catch _:_ -> error
     end.
+
 %%%%%%%%%%%%%%%%%%%

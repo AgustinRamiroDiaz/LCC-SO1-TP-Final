@@ -6,7 +6,7 @@
 
 %%%%%%%%%%%%%%%%%%% Core
 
-% Inicializa los procesos principales y los registra
+% Inicializa el servidor con los procesos principales y los registra
 start() ->
     LSocket = listen(),
     register(dispatcher, spawn(?MODULE, dispatcher, [LSocket])),
@@ -31,7 +31,7 @@ listen() ->
             exit(Reason)
     end.
 
-% Despacha a los clientes que se comunican por LSocket y los manda a un psocket en el socket que se aceptó
+% Despacha un proceso psocket para cada cliente que se comunica a traves del LSocket
 dispatcher(LSocket) ->
     Result = gen_tcp:accept(LSocket),
     case Result of
@@ -43,7 +43,7 @@ dispatcher(LSocket) ->
     end,
     dispatcher(LSocket).
 
-% Maneja los comandos de un cliente
+% Recibe y maneja los comandos de un cliente
 psocket(User = #user{name = undefined}) ->
     Result = gen_tcp:recv(User#user.socket, 0),
     case Result of
@@ -110,7 +110,7 @@ psocket(User) ->
 
 %%%%%%%%%%%%%%%%%%% Commands
 
-% Lleva al cabo la ejecución de un comando
+% Lleva a cabo la ejecución de un comando
 pcommand(User, Command) ->
     case Command of
         #command{cmd = 'LSG', cmdid = Cmdid} -> psocketCommands ! {pcommand, User, #result{status = 'OK', cmdid = Cmdid, args = ['LSG', getAllGames()]}};
@@ -143,7 +143,7 @@ pcommand(User, Command) ->
             psocketCommands ! {pcommand, User, #result{status = 'ERR', cmdid = Cmdid, args = [CMD, "Comando inválido"]}}
     end.
 
-% Espera respuestas para enviar al usuario
+% Espera los resultados de las ejecuciones de los comandos para enviar al usuario
 psocketCommands() ->
     receive {pcommand, User, Result} ->
         respond(User, Result)
@@ -173,7 +173,7 @@ getAllGames() ->
     GamesLists = lists:map(GetGames, Nodes),
     lists:merge(GamesLists).
 
-% Agrega un juego creado por User
+% Crea una partida para un usuario
 addGame(User) ->
     case sendAndWait(pgames, {add, User}) of
         {ok, GameId} ->
@@ -182,7 +182,7 @@ addGame(User) ->
         {error, Reason} -> {error, Reason}
     end.
 
-% User acepta el juego que tiene GameCode 
+% Acepta una partida existente
 acceptGame(User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
@@ -204,7 +204,7 @@ acceptGame(User, GameCode = {GameId, Node}) ->
         {error, Reason} -> {error, Reason}
     end.
 
-% Ejecuta una jugada en una partida
+% Realiza una jugada en una partida
 makePlay(forfeit, User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
@@ -265,7 +265,7 @@ makePlay(Play = {_, _}, User, GameCode = {GameId, Node}) ->
     end;
     makePlay(_, _, _) -> {error, "Jugada inválida"}.
 
-% Observa un juego
+% Agrega a un usuario como observador de una partida
 observeGame(User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
@@ -289,7 +289,7 @@ observeGame(User, GameCode = {GameId, Node}) ->
         {error, Reason} -> {error, Reason}
     end.
 
-% Deja de observar un juego
+% Elimina a un usuario de la lista de observadores de una partida
 leaveGame(User, GameCode = {GameId, Node}) ->
     case getGame(GameId, Node) of
         {ok, Game} ->
@@ -324,7 +324,7 @@ bye(User) ->
     end,
     gen_tcp:close(User#user.socket).
 
-% Consigue el juego del nodo correspondiente
+% Consigue la partida del nodo correspondiente
 getGame(GameId, Node) -> sendAndWait({pgames, Node}, {get, GameId}).
 
 %%%%%%%%%%%%%%%%%%%
@@ -332,7 +332,7 @@ getGame(GameId, Node) -> sendAndWait({pgames, Node}, {get, GameId}).
 
 %%%%%%%%%%%%%%%%%%% Responder
 
-% Espera mensajes del servidor para enviarlos al cliente por TCP
+% Espera mensajes del servidor para enviarlos a un cliente a través de TCP
 presponder(NextUpdateId) ->
     receive
         {respond, User, Message = #update{}} ->
@@ -345,7 +345,7 @@ presponder(NextUpdateId) ->
             presponder(NextUpdateId)
     end.
 
-% Manda Message a User
+% Solicita al nodo en que se encuentra un cliente que le envíe un mensaje a través de TCP
 respond(User, Message) ->
     Node = User#user.node,
     {presponder, Node} ! {respond, User, Message}.
@@ -355,7 +355,7 @@ respond(User, Message) ->
 
 %%%%%%%%%%%%%%%%%%% Updates
 
-% Actualiza al oponente sobre la jugada
+% Avisa al oponente de una partida de un cambio en la misma
 updateOponent(User, GameCode, Game, Message) ->
     if User == Game#game.playerX ->
         Oponent = Game#game.playerO;
@@ -367,13 +367,13 @@ updateOponent(User, GameCode, Game, Message) ->
     true -> error
     end.
 
-% Actualiza a los observadores sobre la jugada
+% Avisa a los observadores de una partida de un cambio en la misma
 updateObservers(GameCode, Game, Message) ->
     UpdateObserver = fun (Observer) -> updateUser(Observer, GameCode, Game, Message) end,
     Observers = sets:to_list(Game#game.observers),
     lists:foreach(UpdateObserver, Observers).
 
-% Actualiza a un usuario sobre algun evento
+% Actualiza a un cliente sobre algún evento
 updateUser(User, GameCode, Game, Message) ->
     respond(User, #update{args = [GameCode, getGameTitle(Game), Message]}).
 
@@ -382,7 +382,7 @@ updateUser(User, GameCode, Game, Message) ->
 
 %%%%%%%%%%%%%%%%%%% Balance
 
-% Maneja las cargas de todos los nodos
+% Lleva la cuenta de las cargas recibidas de cada nodo, y puede devolver al nodo con menor carga
 pbalance(Loads, LastCheck) ->
     CurrentTime = getCurrentTime(),
     if (CurrentTime - LastCheck) >= ?StatsFrequency ->
@@ -406,7 +406,7 @@ pbalance(Loads, LastCheck) ->
         pbalance(FilteredLoads, NewLastCheck)
     end.
 
-% Envía la carga propia a los otros nodos a los cuales este conectado
+% Envía periódicamente la carga de un nodo a los demás
 pstat() ->
     Load = erlang:statistics(run_queue),
     CurrentNode = node(),
@@ -414,7 +414,7 @@ pstat() ->
     timer:sleep(?StatsFrequency),
     pstat().
 
-% Consigue el nodo con menor carga del servidor
+% Devuelve el nodo con menor carga del servidor
 getFreeNode() -> sendAndWait(pbalance, node).
 getFreeNode(Loads) ->
     ChooseNode = fun (Node, {Load, _}, PreviousBest) ->
@@ -437,7 +437,7 @@ getFreeNode(Loads) ->
 
 %%%%%%%%%%%%%%%%%%% Users
 
-% Maneja los nombres y las partidas en las cuales los jugadores esten activos 
+% Maneja los nombres y las partidas en las cuales los clientes estén activos
 pusers(Names, Playing, Observing) ->
     receive
         {{addUser, Name}, Pid} ->
@@ -482,7 +482,7 @@ pusers(Names, Playing, Observing) ->
             pusers(NewNames, NewPlaying, NewObserving)
     end.
 
-% Finaliza una partida, removiendola de todos los jugadores involucrados
+% Finaliza una partida
 pusersEndGame(Game, GameCode) ->
     lists:foreach(fun (Observer) ->
         {pusers, Observer#user.node} ! {removeObserving, Observer#user.name, GameCode}
@@ -498,7 +498,7 @@ pusersEndGame(Game, GameCode) ->
 % Agrega un usuario
 addUser(Name) -> sendAndWait(pusers, {addUser, Name}).
 
-% Remueve un usuario
+% Elimina un usuario
 removeUser(Name) -> pusers ! {removeUser, Name}.
 
 %%%%%%%%%%%%%%%%%%%
@@ -506,7 +506,7 @@ removeUser(Name) -> pusers ! {removeUser, Name}.
 
 %%%%%%%%%%%%%%%%%%% Games
 
-% Administra las partidas
+% Administra las partidas en curso
 pgames(Games, NextGameId) ->
     receive
         {{add, User}, Pid} ->
@@ -545,7 +545,7 @@ pgames(Games, NextGameId) ->
         _ -> ok
     end.
 
-% Consigue un string para representar la partida de forma amigable
+% Devuelve una string para representar la partida de forma amigable
 getGameTitle(#game{playerX = PlayerX, playerO = PlayerO}) ->
     if PlayerO == undefined ->
         PlayerX#user.name ++ " esperando oponente";
@@ -553,7 +553,7 @@ getGameTitle(#game{playerX = PlayerX, playerO = PlayerO}) ->
         PlayerX#user.name ++ " vs " ++ PlayerO#user.name
     end.
 
-% Retorna si User está jugando en Game 
+% Devuelve verdadero si el usuario está jugando la partida, y falso en caso contrario
 isPlaying(User, Game) -> (User == Game#game.playerX) orelse (User == Game#game.playerO).
 
 %%%%%%%%%%%%%%%%%%%
@@ -561,7 +561,7 @@ isPlaying(User, Game) -> (User == Game#game.playerX) orelse (User == Game#game.p
 
 %%%%%%%%%%%%%%%%%%% Game logic
 
-% Ejecuta una jugada en una partida
+% Modifica el tablero del juego acorde a la jugada recibida
 makePlayOnBoard(Play, Game = #game{board = Board, playerX = PlayerX, playerO = PlayerO, turn = Turn}, User) ->
     IsPlaying = isPlaying(User, Game),
     if IsPlaying ->
@@ -583,7 +583,7 @@ makePlayOnBoard(Play, Game = #game{board = Board, playerX = PlayerX, playerO = P
     true -> {error, "No estás jugando esta partida"}
     end.
 
-% Reeemplaza el tablero en la posición X Y con el nuevo símbolo
+% Reemplaza una posición del tablero con el símbolo recibido
 replaceBoardPosition({X, Y}, Board, NewSymbol) ->
     IsValid = (X >= 1) andalso (X =< 3) andalso (Y >= 1) andalso (Y =< 3),
     if IsValid ->
@@ -597,13 +597,13 @@ replaceBoardPosition({X, Y}, Board, NewSymbol) ->
     true -> {error, "La posición no es válida"}
     end.
 
-% Consigue el símbolo del tablero en la posición X Y
+% Devuelve el símbolo del tablero en una posición
 getSymbol(X, Y, Board) -> element(Y, element(X, Board)).
 
-% Cambia el símbolo del tablero en la posición X Y
+% Modifica el símbolo del tablero en una posición
 setSymbol(X, Y, Board, Symbol) -> setelement(X, Board, setelement(Y, element(X, Board), Symbol)).
 
-% Retorna si se ganó la partida
+% Devuelve verdadero si un usuario ganó la partida, y falso en caso contrario
 isWinner({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}, Turn) ->
     PossibleWins = [
         [P11, P12, P13],
@@ -619,7 +619,7 @@ isWinner({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}, Turn) ->
         lists:all(fun (Symbol) -> Symbol == Turn end, List)
     end, PossibleWins).
 
-% Retorna si se empató la partida
+% Devuelve verdadero si la partida fue un empate (asumiendo que nadie ganó), y falso en caso contrario
 isTie({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
     Symbols = [P11, P12, P13, P21, P22, P23, P31, P32, P33],
     lists:all(fun (Symbol) -> Symbol /= e end, Symbols).
@@ -629,7 +629,7 @@ isTie({{P11, P12, P13}, {P21, P22, P23}, {P31, P32, P33}}) ->
 
 %%%%%%%%%%%%%%%%%%% Utils
 
-% Consigue el puerto pasado por argumento en la terminal
+% Devuelve el puerto a utilizar para escuchar conexiones
 getPort() ->
     case init:get_argument(port) of
         {ok, [[Port]]} ->
@@ -641,10 +641,10 @@ getPort() ->
         _ -> ?DefaultPort
     end.
 
-% Consigue el tiempo actual
+% Devuelve el tiempo actual
 getCurrentTime() -> erlang:system_time(millisecond).
 
-% Consigue todos los nodos que conforman el servidor
+% Devuelve todos los nodos que conforman el servidor
 getAllNodes() -> [node() | nodes()].
 
 % Envía el mensaje, espera la respuesta y la retorna
