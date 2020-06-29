@@ -1,6 +1,5 @@
 -module(server).
--export([start/0, dispatcher/1, psocket/1, psocketCommands/0, pbalance/2, pstat/0, pcommand/2, pusers/3, pgames/2, presponder/0]).
--export([leaveGame/2, makePlay/3]).
+-export([start/0, dispatcher/1, psocket/1, psocketCommands/0, pbalance/2, pstat/0, pcommand/2, pusers/3, pgames/2, presponder/1]).
 
 -include("header.hrl").
 -include("serverheader.hrl").
@@ -13,7 +12,7 @@ start() ->
     register(pusers, spawn(?MODULE, pusers, [sets:new(), maps:new(), maps:new()])),
     register(pgames, spawn(?MODULE, pgames, [maps:new(), 0])),
     register(psocketCommands, spawn(?MODULE, psocketCommands, [])),
-    register(presponder, spawn(?MODULE, presponder, [])),
+    register(presponder, spawn(?MODULE, presponder, [0])),
     started.
 
 listen() ->
@@ -98,6 +97,8 @@ psocket(User) ->
                         _ -> ok
                     end,
                     psocket(User);
+                #result{status = 'OK'} ->
+                    psocket(User);
                 _ ->
                     respond(User, #result{status = 'ERR', args = ["Comando inválido"]}),
                     psocket(User)
@@ -127,13 +128,17 @@ respond(User, Message) ->
     Node = User#user.node,
     {presponder, Node} ! {respond, User, Message}.
 
-presponder() ->
+presponder(NextUpdateId) ->
     receive
+        {respond, User, Message = #update{}} ->
+            Socket = User#user.socket,
+            gen_tcp:send(Socket, term_to_binary(Message#update{cmdid = NextUpdateId})),
+            presponder(NextUpdateId + 1);
         {respond, User, Message} ->
             Socket = User#user.socket,
-            gen_tcp:send(Socket, term_to_binary(Message))
-    end,
-    presponder().
+            gen_tcp:send(Socket, term_to_binary(Message)),
+            presponder(NextUpdateId)
+    end.
 
 pbalance(Loads, LastCheck) ->
     CurrentTime = getCurrentTime(),
