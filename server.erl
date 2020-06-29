@@ -541,7 +541,7 @@ removeUser(Name) -> pusers ! {removeUser, Name}.
 pgames(Games, NextGameId) ->
     receive
         {{add, User}, Pid} ->
-            Game = #game{board = ?EmptyBoard, playerX = User, playerO = undefined, turn = x, observers = sets:new()},
+            Game = #game{board = ?EmptyBoard, playerX = User, playerO = undefined, turn = o, observers = sets:new()},
             NewGames = maps:put(NextGameId, Game, Games),
             Pid ! {ok, NextGameId},
             pgames(NewGames, NextGameId + 1);
