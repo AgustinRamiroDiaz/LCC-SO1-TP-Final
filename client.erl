@@ -1,6 +1,7 @@
 -module(client).
--include("header.hrl").
 -export([start/0, input/2, output/1]).
+
+-include("common.hrl").
 
 input(Socket, NextCommandId) ->
     Input = io:get_line("Ingrese un comando: "),
