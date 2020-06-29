@@ -86,7 +86,7 @@ output(Socket) ->
                             showBoard(Board);
                         {forfeit, Username} ->
                             io:format("El usuario ~p se rindió~n~n", [Username])
-                        end,
+                    end,
                     gen_tcp:send(Socket, term_to_binary(#result{status = 'OK', cmdid = Cmdid}));
                 #result{cmdid = Cmdid} ->
                     io:format("Comando ~p~n", [Cmdid]),

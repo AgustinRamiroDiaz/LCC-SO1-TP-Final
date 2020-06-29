@@ -1,5 +1,5 @@
 -module(server).
--export([start/0, dispatcher/1, psocket/1, psocketCommands/0, pbalance/2, pstat/0, pcommand/2, pusers/3, pgames/2, presponder/1]).
+-export([start/0, dispatcher/1, psocket/1, psocketCommands/0, pbalance/2, pstat/0, pcommand/2, pusers/3, pgames/2, presponder/3]).
 
 -include("common.hrl").
 -include("server.hrl").
@@ -9,12 +9,13 @@
 % Inicializa el servidor con los procesos principales y los registra
 start() ->
     LSocket = listen(),
+    CurrentTime = getCurrentTime(),
     register(dispatcher, spawn(?MODULE, dispatcher, [LSocket])),
-    register(pbalance, spawn(?MODULE, pbalance, [maps:new(), getCurrentTime()])),
+    register(pbalance, spawn(?MODULE, pbalance, [maps:new(), CurrentTime])),
     register(pusers, spawn(?MODULE, pusers, [sets:new(), maps:new(), maps:new()])),
     register(pgames, spawn(?MODULE, pgames, [maps:new(), 0])),
     register(psocketCommands, spawn(?MODULE, psocketCommands, [])),
-    register(presponder, spawn(?MODULE, presponder, [0])),
+    register(presponder, spawn(?MODULE, presponder, [maps:new(), CurrentTime, 0])),
     spawn(?MODULE, pstat, []),
     started.
 
@@ -84,15 +85,16 @@ psocket(User) ->
                     respond(User, #result{status ='ERR', cmdid = Cmdid, args = ['CON', "Ya se encuentra registrado"]}),
                     psocket(User);
                 #command{cmd = 'BYE'} ->
-                    bye(User),
-                    io:format("El cliente ~p se desconectó~n", [User#user.name]);
+                    io:format("El cliente ~p se desconectó~n", [User#user.name]),
+                    bye(User);
                 Command = #command{cmdid = Cmdid} ->
                     case runCommand(User, Command) of
                         {'ERR', Args} -> respond(User, #result{status = 'ERR', cmdid = Cmdid, args = Args});
                         _ -> ok
                     end,
                     psocket(User);
-                #result{status = 'OK'} ->
+                #result{status = 'OK', cmdid = Cmdid} ->
+                    presponder ! {ack, Cmdid},
                     psocket(User);
                 _ ->
                     respond(User, #result{status = 'ERR', args = ["Comando inválido"]}),
@@ -332,18 +334,47 @@ getGame(GameId, Node) -> sendAndWait({pgames, Node}, {get, GameId}).
 
 %%%%%%%%%%%%%%%%%%% Responder
 
-% Espera mensajes del servidor para enviarlos a un cliente a través de TCP
-presponder(NextUpdateId) ->
+% Espera mensajes del servidor para enviarlos a un cliente a través de TCP, y reintenta el envío si el cliente no confirma la recepción
+presponder(PendingUpdates, LastCheck, NextUpdateId) ->
+    CurrentTime = getCurrentTime(),
+    if (CurrentTime - LastCheck) >= ?AckWaitTime ->
+        FilteredUpdates = presponderRetryOldUpdates(PendingUpdates),
+        NewLastCheck = CurrentTime;
+    true ->
+        FilteredUpdates = PendingUpdates,
+        NewLastCheck = LastCheck
+    end,
     receive
-        {respond, User, Message = #update{}} ->
+        {respond, User, Update = #update{}} ->
             Socket = User#user.socket,
-            gen_tcp:send(Socket, term_to_binary(Message#update{cmdid = NextUpdateId})),
-            presponder(NextUpdateId + 1);
+            UpdateWithId = Update#update{cmdid = NextUpdateId},
+            gen_tcp:send(Socket, term_to_binary(UpdateWithId)),
+            SavedValue = {Socket, UpdateWithId, getCurrentTime()},
+            NewUpdates = maps:put(NextUpdateId, SavedValue, FilteredUpdates),
+            presponder(NewUpdates, NewLastCheck, NextUpdateId + 1);
         {respond, User, Message} ->
             Socket = User#user.socket,
             gen_tcp:send(Socket, term_to_binary(Message)),
-            presponder(NextUpdateId)
+            presponder(FilteredUpdates, NewLastCheck, NextUpdateId);
+        {ack, Cmdid} ->
+            NewUpdates = maps:remove(Cmdid, FilteredUpdates),
+            presponder(NewUpdates, NewLastCheck, NextUpdateId)
+    after ?AckWaitTime ->
+        presponder(FilteredUpdates, NewLastCheck, NextUpdateId)
     end.
+
+% Recibe actualizaciones esperando confirmación, reintenta una vez las que se realizaron hace cierto tiempo,
+% y devuelve las que aún no fueron reintentadas.
+presponderRetryOldUpdates(UpdatesList) ->
+    CurrentTime = getCurrentTime(),
+    RetryOldUpdate = fun (_, {Socket, Message, Time}) ->
+        if (CurrentTime - Time) =< (2 * ?AckWaitTime) -> true;
+        true ->
+            gen_tcp:send(Socket, term_to_binary(Message)),
+            false
+        end
+    end,
+    maps:filter(RetryOldUpdate, UpdatesList).
 
 % Solicita al nodo en que se encuentra un cliente que le envíe un mensaje a través de TCP
 respond(User, Message) ->
